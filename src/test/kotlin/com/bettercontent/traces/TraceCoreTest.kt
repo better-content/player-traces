@@ -1,6 +1,7 @@
 package com.bettercontent.traces
 
 import com.bettercontent.traces.storage.TraceSerializer
+import com.bettercontent.traces.storage.ensureTraceSchema
 import com.bettercontent.traces.storage.TraceShardState
 import com.bettercontent.traces.storage.TraceShardLruCache
 import com.bettercontent.traces.domain.FootTrace
@@ -17,12 +18,16 @@ import net.minecraft.core.BlockPos
 import net.minecraft.network.FriendlyByteBuf
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import io.netty.buffer.Unpooled
 import java.nio.file.Path
+import java.nio.file.Files
+import java.nio.ByteBuffer
 import java.util.UUID
+import java.util.zip.CRC32
 import com.bettercontent.traces.util.TraceShardId
 import com.bettercontent.traces.config.TracesConfig
 
@@ -105,6 +110,76 @@ class TraceCoreTest {
         assertTrue(loaded.footTraces.isEmpty())
         assertTrue(loaded.annotations.isEmpty())
         assertTrue(loaded.seenStates.isEmpty())
+    }
+
+    @Test
+    fun repeatedLoadsIgnoreInterruptedSiblingWrite(@TempDir dir: Path) {
+        val shardPath = dir.resolve("r.0.0.traces")
+        val state = stateWithTrace("durable")
+        TraceSerializer.write(shardPath, state, Geometry.shardToBounds(0, 0))
+        Files.writeString(dir.resolve(".r.0.0.traces.tmp"), "interrupted replacement")
+
+        repeat(3) {
+            assertEquals(state.footTraces.single().id, TraceSerializer.read(shardPath).footTraces.single().id)
+        }
+    }
+
+    @Test
+    fun corruptPrimaryRecoversLastVerifiedBackup(@TempDir dir: Path) {
+        val shardPath = dir.resolve("r.0.0.traces")
+        val prior = stateWithTrace("prior")
+        TraceSerializer.write(shardPath, prior, Geometry.shardToBounds(0, 0))
+        TraceSerializer.write(shardPath, stateWithTrace("replacement"), Geometry.shardToBounds(0, 0))
+        assertTrue(Files.isRegularFile(dir.resolve("r.0.0.traces.bak")))
+
+        Files.writeString(shardPath, "corrupt primary")
+        val recovered = TraceSerializer.read(shardPath)
+        assertEquals(prior.footTraces.single().id, recovered.footTraces.single().id)
+        assertEquals(prior.footTraces.single().id, TraceSerializer.read(shardPath).footTraces.single().id)
+    }
+
+    @Test
+    fun unknownNewerMajorIsRejectedWithoutRewrite(@TempDir dir: Path) {
+        val shardPath = dir.resolve("r.0.0.traces")
+        TraceSerializer.write(shardPath, stateWithTrace("future"), Geometry.shardToBounds(0, 0))
+        val future = Files.readAllBytes(shardPath)
+        ByteBuffer.wrap(future).putShort(4, 2)
+        val bodySize = future.size - 12
+        val crc = CRC32().also { it.update(future, 0, bodySize) }
+        ByteBuffer.wrap(future).putLong(bodySize + 4, crc.value)
+        Files.write(shardPath, future)
+        val before = Files.readAllBytes(shardPath)
+
+        assertThrows(TraceSerializer.UnsupportedShardVersionException::class.java) { TraceSerializer.read(shardPath) }
+        assertTrue(before.contentEquals(Files.readAllBytes(shardPath)))
+        assertTrue(Files.notExists(dir.resolve("r.0.0.traces.bak")))
+    }
+
+    @Test
+    fun unknownRootSchemaIsRejectedWithoutRewrite(@TempDir dir: Path) {
+        val root = dir.resolve("data/traces")
+        Files.createDirectories(root)
+        val marker = root.resolve("schema")
+        Files.writeString(marker, "traces-v2\n")
+
+        assertThrows(IllegalArgumentException::class.java) { ensureTraceSchema(root) }
+        assertEquals("traces-v2\n", Files.readString(marker))
+    }
+
+    private fun stateWithTrace(seed: String): TraceShardState = TraceShardState().also { state ->
+        state.footTraces += FootTrace(
+            id = UUID.nameUUIDFromBytes(seed.toByteArray()),
+            levelKey = "minecraft:overworld",
+            blockPos = BlockPos(1, 64, 1),
+            movementClass = MovementClass.WALK,
+            strength = 1.0f,
+            sequenceId = UUID.nameUUIDFromBytes("sequence-$seed".toByteArray()),
+            sequenceIndex = 0,
+            createdAt = 1,
+            sequenceEpoch = 1,
+            surviving = true,
+            sourcePlayerInternal = UUID.nameUUIDFromBytes("player-$seed".toByteArray()),
+        )
     }
 
     @Test

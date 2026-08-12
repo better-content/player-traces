@@ -14,6 +14,8 @@ import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.nio.channels.FileChannel
 import org.slf4j.LoggerFactory
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -38,14 +40,26 @@ private const val MAGIC_BYTES = 4
 object TraceSerializer {
     private val log = LoggerFactory.getLogger(TraceSerializer::class.java)
 
+    class UnsupportedShardVersionException(message: String) : IllegalArgumentException(message)
+
     fun read(path: Path): TraceShardState {
-        val state = TraceShardState()
-        if (!Files.exists(path)) return state
-        val all = Files.readAllBytes(path)
-        if (all.size < MAGIC_BYTES + FOOTER_BYTES) {
-            log.warn("Rejecting truncated shard {}", path)
+        if (!Files.exists(path)) return TraceShardState()
+        return try {
+            parse(Files.readAllBytes(path), path)
+        } catch (unsupported: UnsupportedShardVersionException) {
+            log.warn("Refusing unsupported shard {}: {}", path, unsupported.message)
+            throw unsupported
+        } catch (error: Exception) {
+            log.warn("Failed parsing shard {}: {}", path, error.toString())
             quarantineCorrupt(path)
-            return state
+            recoverBackup(path) ?: TraceShardState()
+        }
+    }
+
+    private fun parse(all: ByteArray, path: Path): TraceShardState {
+        val state = TraceShardState()
+        if (all.size < MAGIC_BYTES + FOOTER_BYTES) {
+            throw IllegalArgumentException("truncated shard")
         }
 
         val bodyLen = all.size - FOOTER_BYTES
@@ -55,20 +69,10 @@ object TraceSerializer {
         val footerOffset = all.size - FOOTER_BYTES
         val footerCount = footer.getInt(footerOffset)
         val expectedCrc = footer.getLong(footerOffset + 4)
-        return try {
+        try {
             val crc = CRC32().also { it.update(body) }
             if (footerCount < 0 || expectedCrc != crc.value) {
-                log.warn(
-                    "Rejecting shard {} due CRC mismatch: path={} footerCount={} expectedCrc={} actualCrc={} fileSize={}",
-                    path,
-                    path,
-                    footerCount,
-                    expectedCrc,
-                    crc.value,
-                    all.size,
-                )
-                quarantineCorrupt(path)
-                return state
+                throw IllegalArgumentException("CRC mismatch: footerCount=$footerCount expectedCrc=$expectedCrc actualCrc=${crc.value}")
             }
 
             DataInputStream(ByteArrayInputStream(body)).use { input ->
@@ -76,8 +80,7 @@ object TraceSerializer {
                 val major = input.readUnsignedShort()
                 val minor = input.readUnsignedShort()
                 if (major != MAJOR) {
-                    log.warn("Rejecting shard {} with unsupported major version {}", path, major)
-                    throw IllegalArgumentException("unsupported major version $major")
+                    throw UnsupportedShardVersionException("unsupported major version $major; expected $MAJOR")
                 }
                 repeat(HEADER_EXTRA_INTS) { input.readInt() }
                 log.debug(
@@ -123,11 +126,11 @@ object TraceSerializer {
             }
             val observed = state.footTraces.size + state.annotations.size + state.seenStates.size
             require(observed == footerCount) { "footer record count $footerCount does not match $observed" }
-            state
-        } catch (ex: Exception) {
-            log.warn("Failed parsing shard {}: {}", path, ex.toString())
-            quarantineCorrupt(path)
-            TraceShardState()
+            return state
+        } catch (unsupported: UnsupportedShardVersionException) {
+            throw unsupported
+        } catch (error: Exception) {
+            throw IllegalArgumentException("invalid shard $path: ${error.message}", error)
         }
     }
 
@@ -168,15 +171,71 @@ object TraceSerializer {
             footerOut.writeInt(state.footTraces.size + state.annotations.size + state.seenStates.size)
             footerOut.writeLong(crc.value)
         }
+        val bytes = body + footerBuffer.toByteArray()
         Files.createDirectories(path.parent)
-        val temp = path.resolveSibling("." + path.fileName.toString() + ".tmp")
-        Files.write(temp, body + footerBuffer.toByteArray())
-        try {
-            Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        } catch (_: AtomicMoveNotSupportedException) {
-            Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING)
+        val temp = tempPath(path)
+        writeDurable(temp, bytes)
+        parse(Files.readAllBytes(temp), temp)
+        if (Files.exists(path)) {
+            parse(Files.readAllBytes(path), path)
+            val backupTemp = backupTempPath(path)
+            writeDurable(backupTemp, Files.readAllBytes(path))
+            parse(Files.readAllBytes(backupTemp), backupTemp)
+            moveReplacing(backupTemp, backupPath(path))
+            forceDirectory(path.parent)
+        }
+        moveReplacing(temp, path)
+        forceDirectory(path.parent)
+    }
+
+    private fun recoverBackup(path: Path): TraceShardState? {
+        val backup = backupPath(path)
+        if (!Files.exists(backup)) return null
+        return try {
+            val bytes = Files.readAllBytes(backup)
+            val recovered = parse(bytes, backup)
+            val temp = tempPath(path)
+            writeDurable(temp, bytes)
+            parse(Files.readAllBytes(temp), temp)
+            moveReplacing(temp, path)
+            forceDirectory(path.parent)
+            recovered
+        } catch (unsupported: UnsupportedShardVersionException) {
+            throw unsupported
+        } catch (error: Exception) {
+            log.warn("Backup recovery failed for {} from {}: {}", path, backup, error.toString())
+            quarantineCorrupt(backup)
+            null
         }
     }
+
+    private fun writeDurable(path: Path, bytes: ByteArray) {
+        FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE).use { channel ->
+            var buffer = ByteBuffer.wrap(bytes)
+            while (buffer.hasRemaining()) channel.write(buffer)
+            channel.force(true)
+        }
+    }
+
+    private fun moveReplacing(source: Path, target: Path) {
+        try {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
+    private fun forceDirectory(directory: Path) {
+        try {
+            FileChannel.open(directory, StandardOpenOption.READ).use { it.force(true) }
+        } catch (_: Exception) {
+            // Not every filesystem permits opening directories. File contents were already forced.
+        }
+    }
+
+    private fun tempPath(path: Path) = path.resolveSibling(".${path.fileName}.tmp")
+    private fun backupPath(path: Path) = path.resolveSibling("${path.fileName}.bak")
+    private fun backupTempPath(path: Path) = path.resolveSibling(".${path.fileName}.bak.tmp")
 
     private fun quarantineCorrupt(path: Path) {
         try {

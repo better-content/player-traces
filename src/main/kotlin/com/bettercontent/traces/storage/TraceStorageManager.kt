@@ -11,10 +11,31 @@ import org.slf4j.LoggerFactory
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
+import java.nio.channels.FileChannel
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+
+internal const val TRACE_SCHEMA_MARKER = "traces-v1\n"
+
+internal fun ensureTraceSchema(tracesRoot: Path) {
+    val schemaFile = tracesRoot.resolve("schema")
+    Files.createDirectories(schemaFile.parent)
+    if (Files.exists(schemaFile)) {
+        val existing = Files.readString(schemaFile, Charsets.UTF_8)
+        require(existing == TRACE_SCHEMA_MARKER) {
+            "Unsupported Traces root schema '${existing.trim()}'; expected '${TRACE_SCHEMA_MARKER.trim()}'. Refusing to rewrite world data."
+        }
+        return
+    }
+    FileChannel.open(schemaFile, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { channel ->
+        val bytes = java.nio.ByteBuffer.wrap(TRACE_SCHEMA_MARKER.toByteArray(Charsets.UTF_8))
+        while (bytes.hasRemaining()) channel.write(bytes)
+        channel.force(true)
+    }
+}
 
 class TraceStorageManager(
     private val level: ServerLevel,
@@ -39,20 +60,7 @@ class TraceStorageManager(
     }
 
     private fun ensureSchema() {
-        val schemaFile = tracesRoot.resolve("schema")
-        try {
-            Files.createDirectories(schemaFile.parent)
-            if (Files.exists(schemaFile)) {
-                val existing = Files.readString(schemaFile, java.nio.charset.StandardCharsets.UTF_8)
-                if (existing != "traces-v1\n") {
-                    log.warn("Unexpected Traces schema marker in {}: {}", schemaFile, existing.trim())
-                }
-            } else {
-                Files.writeString(schemaFile, "traces-v1\n", java.nio.charset.StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.CREATE_NEW)
-            }
-        } catch (error: Exception) {
-            log.warn("Unable to initialize Traces schema marker at {}", schemaFile, error)
-        }
+        ensureTraceSchema(tracesRoot)
     }
 
     private fun resolveRoot(level: ServerLevel): Path {
