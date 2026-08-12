@@ -1,0 +1,7 @@
+/.gradle/
+/build/
+/run/
+/out/
+/forge-*-installer.jar
+/target/
+/dist/

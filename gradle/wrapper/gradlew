@@ -1,0 +1,29 @@
+#!/usr/bin/env sh
+if ! command -v java >/dev/null 2>&1; then
+  if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+    PATH="$JAVA_HOME/bin:$PATH"
+    export PATH
+  else
+    for candidate in "$HOME"/.gradle/jdks/*17* "$HOME"/.gradle/jdks/*17*/jdk-17*; do
+      if [ -x "$candidate/bin/java" ]; then
+        JAVA_HOME="$candidate"
+        PATH="$JAVA_HOME/bin:$PATH"
+        export JAVA_HOME PATH
+        break
+      fi
+    done
+  fi
+fi
+
+if command -v gradle >/dev/null 2>&1; then
+  exec gradle "$@"
+elif [ -x "$HOME/.gradle/wrapper/dists/gradle-8.8-bin/bin/gradle" ]; then
+  exec "$HOME/.gradle/wrapper/dists/gradle-8.8-bin/bin/gradle" "$@"
+elif [ -x /tmp/traces-gradle2/gradle-8.8/bin/gradle ]; then
+  exec /tmp/traces-gradle2/gradle-8.8/bin/gradle "$@"
+elif [ -x /tmp/traces-gradle2/gradle/bin/gradle ]; then
+  exec /tmp/traces-gradle2/gradle/bin/gradle "$@"
+else
+  echo "Gradle not found. Install Gradle 8.8 in PATH or under \$HOME/.gradle/wrapper/dists/gradle-8.8-bin/."
+  exit 1
+fi
