@@ -1,6 +1,6 @@
 modLoader="javafml"
 loaderVersion="[47,)"
-license="All Rights Reserved"
+license="AGPL-3.0-or-later"
 
 [[mods]]
 modId="player_traces_echo_prototype"
