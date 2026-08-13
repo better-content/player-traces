@@ -1,4 +1,4 @@
-# Traces
+# Player Traces
 
 Traces is a server-authoritative Forge 1.20.1 mod that records grounded player footprints into compact shard files and renders nearby footprints, persistent notes, and animated player echoes.
 
@@ -83,3 +83,12 @@ Nearby changed-note guidance is server-authored and shown as bounded floating ro
 - Traces renders only its footprint, guidance, pin, and label geometry into the active world target.
 - Footprints and notes use vanilla depth-tested surface quads at `AFTER_PARTICLES` without changing world colors or compositing the viewport.
 - It does not copy, replace, desaturate, or composite the full world framebuffer.
+
+## Canonical identity
+
+- Repository and release artifact: `player-traces`
+- Mod ID and resource namespace: `player_traces`
+- Java package: `com.bettercontent.playertraces`
+- Validation: `./gradlew verifyFull`
+
+This normalization is a clean break. Worlds, configuration files, and integrations created for earlier identities are not migrated or aliased.

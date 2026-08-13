@@ -2,9 +2,9 @@ modLoader="javafml"
 loaderVersion="[47,)"
 license="MIT"
 [[mods]]
-modId="traces"
+modId="player_traces"
 version="0.1.0"
-displayName="Traces"
+displayName="Player Traces"
 authors="Better Content"
 description='''Server-authoritative player movement trace system with anonymous sharing and trace-guided wayfinding.''' 
 

@@ -10,7 +10,7 @@ val shaderCompatibilityValidation = providers.gradleProperty("tracesShaderCompat
 val echoPrototypeEnabled = providers.gradleProperty("tracesModCacheDir").isPresent
 
 base {
-    archivesName.set("traces")
+    archivesName.set("player-traces")
 }
 
 version = "0.1.0"
@@ -105,7 +105,7 @@ minecraft {
             property("forge.logging.markers", "REGISTRIES")
             property("forge.logging.console.level", "debug")
             mods {
-                create("traces") {
+                create("player_traces") {
                     source(sourceSets["main"])
                     source(sourceSets["test"])
                 }
@@ -122,7 +122,7 @@ minecraft {
             property("mixin.env.refMapRemappingFile", project.file("build/createSrgToMcp/output.srg").absolutePath)
             property("forge.logging.console.level", "info")
             mods {
-                create("traces_echo_prototype") {
+                create("player_traces_echo_prototype") {
                     source(sourceSets["echoPrototype"])
                 }
             }
@@ -134,7 +134,7 @@ minecraft {
             property("forge.logging.markers", "REGISTRIES")
             property("forge.logging.console.level", "debug")
             mods {
-                create("traces") {
+                create("player_traces") {
                     source(sourceSets["main"])
                     source(sourceSets["test"])
                 }
@@ -144,11 +144,11 @@ minecraft {
         create("gameTestServer") {
             workingDirectory(project.file("run"))
             args("--nogui")
-            property("forge.enabledGameTestNamespaces", "traces")
+            property("forge.enabledGameTestNamespaces", "player_traces")
             property("forge.logging.markers", "REGISTRIES")
             property("forge.logging.console.level", "debug")
             mods {
-                create("traces") {
+                create("player_traces") {
                     source(sourceSets["main"])
                     source(sourceSets["gametest"])
                 }

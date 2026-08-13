@@ -3,33 +3,33 @@ loaderVersion="[47,)"
 license="All Rights Reserved"
 
 [[mods]]
-modId="traces_echo_prototype"
+modId="player_traces_echo_prototype"
 version="0.1.0"
 displayName="Traces Echo Prototype"
 description='''Non-shipping motion capture and ethereal wireframe replay harness.'''
 
-[[dependencies.traces_echo_prototype]]
+[[dependencies.player_traces_echo_prototype]]
 modId="forge"
 mandatory=true
 versionRange="[47.4.13,)"
 ordering="NONE"
 side="CLIENT"
 
-[[dependencies.traces_echo_prototype]]
-modId="traces"
+[[dependencies.player_traces_echo_prototype]]
+modId="player_traces"
 mandatory=true
 versionRange="[0.1.0,)"
 ordering="AFTER"
 side="CLIENT"
 
-[[dependencies.traces_echo_prototype]]
+[[dependencies.player_traces_echo_prototype]]
 modId="quark"
 mandatory=true
 versionRange="[4.0-462]"
 ordering="AFTER"
 side="CLIENT"
 
-[[dependencies.traces_echo_prototype]]
+[[dependencies.player_traces_echo_prototype]]
 modId="playeranimator"
 mandatory=true
 versionRange="[1.0.2-rc1,)"

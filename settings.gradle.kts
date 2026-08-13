@@ -6,4 +6,4 @@ pluginManagement {
     }
 }
 
-rootProject.name = "traces"
+rootProject.name = "player-traces"
