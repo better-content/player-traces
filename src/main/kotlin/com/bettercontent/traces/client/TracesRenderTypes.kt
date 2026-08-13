@@ -4,11 +4,15 @@ import net.minecraft.client.renderer.RenderType
 import net.minecraft.resources.ResourceLocation
 
 object TracesRenderTypes {
-    val footprintTexture = ResourceLocation.fromNamespaceAndPath("traces", "textures/effect/boot_prints.png")
-    val guidanceTexture = ResourceLocation.fromNamespaceAndPath("traces", "textures/effect/guidance.png")
-    val pinTexture = ResourceLocation.fromNamespaceAndPath("traces", "textures/effect/pin.png")
+    private val footprintTexture = ResourceLocation.fromNamespaceAndPath("traces", "textures/effect/leg_contact.png")
+    private val whiteTexture = ResourceLocation.fromNamespaceAndPath("minecraft", "textures/misc/white.png")
+    private val bloodPoolTexture = ResourceLocation.fromNamespaceAndPath("traces", "textures/effect/blood_pool.png")
 
-    val footprints: RenderType = TracesRevealRenderTypes.reveal(footprintTexture, "footprints", com.mojang.blaze3d.vertex.VertexFormat.Mode.TRIANGLES)
-    val guidance: RenderType = TracesRevealRenderTypes.reveal(pinTexture, "guidance", com.mojang.blaze3d.vertex.VertexFormat.Mode.TRIANGLES)
-    val pin: RenderType = TracesRevealRenderTypes.reveal(pinTexture, "pin", com.mojang.blaze3d.vertex.VertexFormat.Mode.TRIANGLES)
+    val footprints: RenderType = RenderType.entityTranslucent(footprintTexture)
+    private val noteTypes = com.bettercontent.traces.domain.AnnotationComponents.icons.associateWith { icon ->
+        RenderType.entityCutoutNoCullZOffset(ResourceLocation.fromNamespaceAndPath("traces", "textures/effect/icon_$icon.png"))
+    }
+    fun note(icon: String): RenderType = noteTypes[icon] ?: noteTypes.getValue("pin")
+    val guidance: RenderType = RenderType.entityTranslucent(whiteTexture)
+    val bloodPools: RenderType = RenderType.entityTranslucent(bloodPoolTexture)
 }

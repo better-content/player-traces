@@ -17,14 +17,11 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.channels.FileChannel
 import org.slf4j.LoggerFactory
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.UUID
 import java.util.zip.CRC32
 
 private const val MAGIC = 0x54524143
-private const val MAJOR = 1
+private const val MAJOR = 2
 private const val MINOR = 0
 
 private const val FOOT_BLOCK = 1
@@ -36,6 +33,11 @@ private const val FOOTER_BYTES = 12
 private const val HEADER_EXTRA_INTS = 8
 private const val HEADER_HEADER_BYTES = 2 + 2 + (HEADER_EXTRA_INTS * 4)
 private const val MAGIC_BYTES = 4
+private const val MAX_SHARD_BYTES = 64L * 1024L * 1024L
+private const val MAX_FOOT_TRACES = 500_000
+private const val MAX_ANNOTATIONS = 16_384
+private const val MAX_SEEN_STATES = 1_000_000
+private const val MIN_RECORD_BYTES = 32
 
 object TraceSerializer {
     private val log = LoggerFactory.getLogger(TraceSerializer::class.java)
@@ -44,6 +46,11 @@ object TraceSerializer {
 
     fun read(path: Path): TraceShardState {
         if (!Files.exists(path)) return TraceShardState()
+        if (Files.size(path) > MAX_SHARD_BYTES) {
+            log.warn("Rejecting oversized shard {} ({} bytes)", path, Files.size(path))
+            quarantineCorrupt(path)
+            return recoverBackup(path) ?: TraceShardState()
+        }
         return try {
             parse(Files.readAllBytes(path), path)
         } catch (unsupported: UnsupportedShardVersionException) {
@@ -58,6 +65,7 @@ object TraceSerializer {
 
     private fun parse(all: ByteArray, path: Path): TraceShardState {
         val state = TraceShardState()
+        require(all.size <= MAX_SHARD_BYTES) { "oversized shard: ${all.size} bytes" }
         if (all.size < MAGIC_BYTES + FOOTER_BYTES) {
             throw IllegalArgumentException("truncated shard")
         }
@@ -71,7 +79,7 @@ object TraceSerializer {
         val expectedCrc = footer.getLong(footerOffset + 4)
         try {
             val crc = CRC32().also { it.update(body) }
-            if (footerCount < 0 || expectedCrc != crc.value) {
+            if (footerCount < 0 || footerCount > MAX_FOOT_TRACES + MAX_ANNOTATIONS + MAX_SEEN_STATES || expectedCrc != crc.value) {
                 throw IllegalArgumentException("CRC mismatch: footerCount=$footerCount expectedCrc=$expectedCrc actualCrc=${crc.value}")
             }
 
@@ -102,17 +110,17 @@ object TraceSerializer {
                     when (type) {
                         FOOT_BLOCK -> {
                             val count = input.readInt()
-                            require(count >= 0) { "negative foot trace count" }
+                            requireCount("foot trace", count, MAX_FOOT_TRACES, input)
                             repeat(count) { state.footTraces.add(readFootTrace(input)) }
                         }
                         ANNOTATION_BLOCK -> {
                             val count = input.readInt()
-                            require(count >= 0) { "negative annotation count" }
+                            requireCount("annotation", count, MAX_ANNOTATIONS, input)
                             repeat(count) { state.annotations.add(readAnnotation(input)) }
                         }
                         SEEN_BLOCK -> {
                             val count = input.readInt()
-                            require(count >= 0) { "negative seen-state count" }
+                            requireCount("seen-state", count, MAX_SEEN_STATES, input)
                             repeat(count) { state.seenStates.add(readSeenState(input)) }
                         }
                         VERSION_BLOCK -> {
@@ -240,11 +248,9 @@ object TraceSerializer {
     private fun quarantineCorrupt(path: Path) {
         try {
             if (!Files.exists(path)) return
-            val ts = SimpleDateFormat("yyyyMMddHHmmss", Locale.ROOT).format(Date())
             Files.move(
                 path,
-                path.resolveSibling("${path.fileName}.corrupt.$ts"),
-                StandardCopyOption.REPLACE_EXISTING
+                path.resolveSibling("${path.fileName}.corrupt.${System.currentTimeMillis()}.${UUID.randomUUID()}")
             )
         } catch (_: Exception) {
         }
@@ -253,9 +259,10 @@ object TraceSerializer {
     private fun writeFootTrace(output: DataOutputStream, trace: FootTrace) {
         output.writeUTF(trace.id.toString())
         output.writeUTF(trace.levelKey)
-        output.writeInt(trace.blockPos.x)
-        output.writeInt(trace.blockPos.y)
-        output.writeInt(trace.blockPos.z)
+        output.writeDouble(trace.x)
+        output.writeDouble(trace.y)
+        output.writeDouble(trace.z)
+        output.writeFloat(trace.facingYaw)
         output.writeByte(trace.movementClass.ordinal)
         output.writeFloat(trace.strength)
         output.writeLong(trace.sequenceId.mostSignificantBits)
@@ -294,26 +301,34 @@ object TraceSerializer {
     }
 
     private fun readFootTrace(input: DataInputStream): FootTrace {
-        val id = UUID.fromString(input.readUTF())
-        val levelKey = input.readUTF()
-        val x = input.readInt()
-        val y = input.readInt()
-        val z = input.readInt()
-        val movement = MovementClass.values()[input.readUnsignedByte()]
+        val id = UUID.fromString(readUtf(input, 36, "trace id"))
+        val levelKey = readUtf(input, 256, "level key")
+        val x = input.readDouble()
+        val y = input.readDouble()
+        val z = input.readDouble()
+        val facingYaw = input.readFloat()
+        require(x.isFinite() && y.isFinite() && z.isFinite() && facingYaw.isFinite()) { "non-finite trace geometry" }
+        require(kotlin.math.abs(x) <= 30_000_001.0 && kotlin.math.abs(z) <= 30_000_001.0 && y in -2048.0..2048.0) {
+            "trace geometry exceeds world bounds"
+        }
+        val movementOrdinal = input.readUnsignedByte()
+        require(movementOrdinal in MovementClass.values().indices) { "invalid movement class" }
+        val movement = MovementClass.values()[movementOrdinal]
         val strength = input.readFloat()
+        require(strength.isFinite() && strength >= 0f) { "invalid trace strength" }
         val sequence = UUID(input.readLong(), input.readLong())
         val sequenceIndex = input.readInt()
         val createdAt = input.readLong()
         val epoch = input.readLong()
         val surviving = input.readBoolean()
         val player = UUID(input.readLong(), input.readLong())
-        return FootTrace(id, levelKey, BlockPos(x, y, z), movement, strength, sequence, sequenceIndex, createdAt, epoch, surviving, player)
+        return FootTrace(id, levelKey, x, y, z, facingYaw, movement, strength, sequence, sequenceIndex, createdAt, epoch, surviving, player)
     }
 
     private fun readAnnotation(input: DataInputStream): TraceAnnotation {
-        val id = UUID.fromString(input.readUTF())
-        val text = input.readUTF()
-        val icon = input.readUTF()
+        val id = UUID.fromString(readUtf(input, 36, "annotation id"))
+        val text = readUtf(input, 256, "annotation text")
+        val icon = readUtf(input, 64, "annotation icon")
         val color = input.readInt()
         val x = input.readInt()
         val y = input.readInt()
@@ -321,8 +336,9 @@ object TraceSerializer {
         val tx = input.readInt()
         val ty = input.readInt()
         val tz = input.readInt()
-        val team = TraceTeam(input.readUTF())
+        val team = TraceTeam(readUtf(input, 64, "annotation team"))
         val revision = input.readInt()
+        require(revision >= 0) { "negative annotation revision" }
         val creator = UUID(input.readLong(), input.readLong())
         return TraceAnnotation(id, text, icon, color, BlockPos(x, y, z), BlockPos(tx, ty, tz), team, revision, creator)
     }
@@ -331,6 +347,18 @@ object TraceSerializer {
         val annotation = UUID(input.readLong(), input.readLong())
         val player = UUID(input.readLong(), input.readLong())
         val revision = input.readInt()
+        require(revision >= 0) { "negative seen-state revision" }
         return SeenStateRecord(annotation, player, revision)
+    }
+
+    private fun requireCount(label: String, count: Int, maximum: Int, input: DataInputStream) {
+        require(count in 0..maximum) { "$label count $count exceeds limit $maximum" }
+        require(count <= input.available() / MIN_RECORD_BYTES) { "$label count $count exceeds remaining shard bytes" }
+    }
+
+    private fun readUtf(input: DataInputStream, maximum: Int, label: String): String {
+        val value = input.readUTF()
+        require(value.length <= maximum) { "$label exceeds $maximum characters" }
+        return value
     }
 }

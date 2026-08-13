@@ -11,4 +11,7 @@ data class VisibleAnnotationDto(
     val team: String,
     val revision: Int,
     val seen: Boolean,
+    val canEdit: Boolean = false,
+    val hasEcho: Boolean = false,
+    val echoRevision: Int = 0,
 )

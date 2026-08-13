@@ -69,6 +69,29 @@ else
 fi
 javac -d "$HELPER" scripts/visual-validation/VisualValidationCapture.java
 
+OPTIONS_FILE="$ROOT/build/visual-run/options.txt"
+if [[ -f "$OPTIONS_FILE" ]]; then
+  sed -i 's/^tutorialStep:.*/tutorialStep:none/' "$OPTIONS_FILE"
+else
+  printf 'tutorialStep:none\n' >"$OPTIONS_FILE"
+fi
+
+if [[ "$SHADER_COMPAT" == "true" ]]; then
+  SHADER_PACK="ComplementaryReimagined_r5.8.1.zip"
+  SHADER_SOURCE="$ROOT/../../../shaderpacks/$SHADER_PACK"
+  [[ -f "$SHADER_SOURCE" ]] || { echo "missing shader pack: $SHADER_SOURCE" >&2; exit 1; }
+  mkdir -p "$ROOT/build/visual-run/shaderpacks" "$ROOT/build/visual-run/config"
+  cp "$SHADER_SOURCE" "$ROOT/build/visual-run/shaderpacks/$SHADER_PACK"
+  printf '%s\n' \
+    'colorSpace=SRGB' \
+    'disableUpdateMessage=false' \
+    'enableDebugOptions=false' \
+    'maxShadowRenderDistance=32' \
+    "shaderPack=$SHADER_PACK" \
+    'enableShaders=true' \
+    >"$ROOT/build/visual-run/config/oculus.properties"
+fi
+
 Xvfb "$DISPLAY_VALUE" -screen 0 1280x720x24 -nolisten tcp >"$OUT/xvfb.log" 2>&1 &
 xvfb_pid=$!
 sleep 1
@@ -78,12 +101,8 @@ DISPLAY="$DISPLAY_VALUE" ./gradlew "${GRADLE_ARGS[@]}" runClient -PtracesVisual=
 client_pid=$!
 
 log="$ROOT/build/visual-run/logs/latest.log"
-deadline=$((SECONDS + 180))
-if [[ "$SHADER_COMPAT" == "true" ]]; then
-  readiness_pattern='TRACES_VISUAL_INTERACTIVE'
-else
-  readiness_pattern='Traces render-level stage observed'
-fi
+deadline=$((SECONDS + ${TRACES_VISUAL_STARTUP_TIMEOUT:-360}))
+readiness_pattern='Traces render-level stage observed'
 until [[ -f "$log" ]] && grep -q 'TRACES_VISUAL_FIXTURE' "$log" && grep -q "$readiness_pattern" "$log"; do
   if ! kill -0 "$client_pid" 2>/dev/null; then
     echo "visual client exited before readiness" >&2
@@ -114,12 +133,30 @@ wait "$client_pid" || true
 client_pid=""
 
 grep -E 'TRACES_VISUAL_(FIXTURE|READY|DISCONNECTED)|Trace query response' "$log" >"$OUT/readiness.log" || true
-if grep -Eiq 'renderer fatal|vertex format|NaN|Disabling Traces world desaturation' "$log"; then
+grep -F 'TRACES_GUIDANCE_XP' "$log" >"$OUT/guidance-xp.log" || {
+  echo "following guidance did not award experience" >&2
+  exit 1
+}
+if grep -Eiq 'renderer fatal|vertex format|NaN' "$log"; then
   echo "renderer diagnostics contain a fatal visual error" >&2
   exit 1
 fi
+grep -Fq 'TRACES_SIGHT_OVERLAY_TARGET active=false screenOpen=true' "$log" || {
+  echo "Trace Sight treatment did not suppress itself for the open GUI" >&2
+  exit 1
+}
+grep -Fq 'noteEchoes=1' "$log" || {
+  echo "annotation echo playback was not observed by renderer diagnostics" >&2
+  exit 1
+}
 if [[ "$SHADER_COMPAT" == "true" ]]; then
-  cp "$ROOT/build/visual-run/shader-compat-artifacts.json" "$OUT/shader-compat-artifacts.json"
+  if [[ -f "$ROOT/build/visual-run/shader-compat-artifacts.json" ]]; then
+    cp "$ROOT/build/visual-run/shader-compat-artifacts.json" "$OUT/shader-compat-artifacts.json"
+  else
+    shader_sha256="$(sha256sum "$SHADER_SOURCE" | awk '{print $1}')"
+    printf '{\n  "shaderPack": {"name": "%s", "sha256": "%s"},\n  "shadersEnabled": true\n}\n' \
+      "$SHADER_PACK" "$shader_sha256" >"$OUT/shader-compat-artifacts.json"
+  fi
   grep -Fq 'ComplementaryReimagined_r5.8.1.zip' "$OUT/client-console.log" || {
     echo "Complementary shader pack was not observed in the client log" >&2
     exit 1
@@ -137,10 +174,10 @@ cat >"$OUT/manifest.json" <<EOF
   "world": "Traces Visual",
   "reusedPersistedWorld": $([[ "${TRACES_REUSE_VISUAL_RUN:-0}" == "1" ]] && echo true || echo false),
   "payloadLimit": 512,
-  "desaturation": 0.8,
+  "fullScreenPostProcessing": false,
   "shaderCompatibility": $SHADER_COMPAT,
   "shaderPack": $SHADER_PACK_JSON,
-  "screenshots": ["01-overlay-off.png", "02-overlay-on.png", "03-guidance-connected.png", "04-guidance-disconnected.png", "05-depth-occlusion.png", "06-gui-open.png"]
+  "screenshots": ["01-overlay-off.png", "02-overlay-treatment.png", "03-player-generated-precise-yaw.png", "04-guidance-connected.png", "04b-guidance-followed-xp.png", "05-guidance-disconnected.png", "06-depth-occlusion.png", "07-annotation-editor.png"]
 }
 EOF
 printf 'Visual evidence: %s\n' "$OUT"

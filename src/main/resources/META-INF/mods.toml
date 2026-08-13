@@ -1,20 +1,17 @@
 modLoader="javafml"
 loaderVersion="[47,)"
 license="MIT"
-issueTrackerURL="https://example.com/traces/issues"
 [[mods]]
 modId="traces"
-version="${file.jarVersion}"
+version="0.1.0"
 displayName="Traces"
-authors="Codex"
+authors="Better Content"
 description='''Server-authoritative player movement trace system with anonymous sharing and trace-guided wayfinding.''' 
-displayURL="https://example.com/traces"
-logoFile=""
 
 [[dependencies.traces]]
 modId="forge"
 mandatory=true
-versionRange="[47,)"
+versionRange="[47.4.13,)"
 ordering="NONE"
 side="BOTH"
 
@@ -22,5 +19,12 @@ side="BOTH"
 modId="minecraft"
 mandatory=true
 versionRange="[1.20.1]"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.traces]]
+modId="kotlinforforge"
+mandatory=true
+versionRange="[4.12.0,)"
 ordering="NONE"
 side="BOTH"

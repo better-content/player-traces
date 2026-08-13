@@ -6,9 +6,10 @@ import com.bettercontent.traces.domain.TraceAnnotation
 import com.bettercontent.traces.util.Geometry
 import com.bettercontent.traces.util.TraceShardId
 import net.minecraft.core.BlockPos
+import net.minecraft.resources.ResourceLocation
 import net.minecraft.server.level.ServerLevel
+import net.minecraft.world.level.storage.LevelResource
 import org.slf4j.LoggerFactory
-import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
@@ -41,6 +42,11 @@ class TraceStorageManager(
     private val level: ServerLevel,
     private val config: TracesConfig.Common,
 ) {
+    companion object {
+        internal fun dimensionRoot(worldRoot: Path, dimension: ResourceLocation): Path =
+            worldRoot.toAbsolutePath().normalize().resolve("data/traces")
+                .resolve(dimension.namespace).resolve(dimension.path)
+    }
     private val log = LoggerFactory.getLogger(TraceStorageManager::class.java)
     private val cache = TraceShardLruCache(config.shardCacheSize.get())
     private val dirtyExecutor = Executors.newSingleThreadExecutor { task ->
@@ -51,30 +57,35 @@ class TraceStorageManager(
     private val annotationIndex = java.util.concurrent.ConcurrentHashMap<UUID, TraceShardId>()
     private val pendingFlushes = mutableListOf<Future<*>>()
     private val queuedFlushes = java.util.concurrent.ConcurrentHashMap.newKeySet<TraceShardId>()
+    private val evictedPending = java.util.concurrent.ConcurrentHashMap<TraceShardId, TraceShardState>()
+    @Volatile private var closed = false
 
-    private val baseRoot: Path = resolveRoot(level)
-    private val tracesRoot: Path = baseRoot.resolve("data").resolve("traces")
+    private val worldRoot: Path = level.server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize()
+    private val tracesRoot: Path = worldRoot.resolve("data").resolve("traces")
+    private val dimensionId = level.dimension().location()
+    private val levelKey = dimensionId.toString()
+    private val dimensionRoot = dimensionRoot(worldRoot, dimensionId)
 
     init {
         ensureSchema()
+        warnLegacyStorage()
     }
 
     private fun ensureSchema() {
         ensureTraceSchema(tracesRoot)
     }
 
-    private fun resolveRoot(level: ServerLevel): Path {
-        val server = level.server
-        val dir = runCatching { server.javaClass.getMethod("getServerDirectory").invoke(server) as File }
-            .getOrNull()
-            ?: File(".")
-        return dir.toPath()
+    private fun warnLegacyStorage() {
+        val legacy = level.server.getServerDirectory().toPath().toAbsolutePath().normalize().resolve("data/traces")
+        if (legacy != tracesRoot && Files.isDirectory(legacy)) {
+            log.warn("Legacy Traces storage at {} is intentionally not imported; active world storage is {}", legacy, tracesRoot)
+        }
     }
 
-    private fun worldDimensionPath(): String = level.dimension().location().toString().substringAfterLast(":")
+    private fun worldDimensionPath(): String = levelKey
 
     private fun shardPath(id: TraceShardId): Path =
-        tracesRoot.resolve(worldDimensionPath()).resolve("r.${id.regionX}.${id.regionZ}.traces")
+        dimensionRoot.resolve("r.${id.regionX}.${id.regionZ}.traces")
 
     private fun loadShard(id: TraceShardId): TraceShardState {
         val existing = cache.get(id)
@@ -96,20 +107,35 @@ class TraceStorageManager(
             TraceShardState()
         }
         val evicted = cache.put(id, loaded)
+        indexShard(id, loaded)
         if (evicted != null && evicted.second.dirty) {
-            val (snapshot, generation) = evicted.second.snapshot()
-            writeSnapshot(evicted.first, snapshot)
-            evicted.second.clearDirtyIfUnchanged(generation)
+            val (snapshot, _) = evicted.second.snapshot()
+            queueEvicted(evicted.first, snapshot)
         }
         return loaded
     }
 
+    private fun indexShard(id: TraceShardId, state: TraceShardState) {
+        state.annotationsSnapshot().forEach { annotationIndex[it.id] = id }
+    }
+
+    private fun queueEvicted(id: TraceShardId, snapshot: TraceShardState) {
+        evictedPending[id] = snapshot
+        pendingFlushes += dirtyExecutor.submit {
+            try {
+                writeSnapshot(id, snapshot)
+                evictedPending.remove(id, snapshot)
+            } catch (error: Exception) {
+                log.warn("Failed to flush evicted trace shard {}", id, error)
+            }
+        }
+    }
+
     private fun allShardIds(): Sequence<TraceShardId> {
-        val dimPath = tracesRoot.resolve(worldDimensionPath())
-        if (!Files.isDirectory(dimPath)) return emptySequence()
+        if (!Files.isDirectory(dimensionRoot)) return emptySequence()
         val ids = mutableListOf<TraceShardId>()
         return runCatching {
-            Files.list(dimPath).use { paths ->
+            Files.list(dimensionRoot).use { paths ->
                 paths.filter { path ->
                     val name = path.fileName.toString()
                     name.startsWith("r.") && name.endsWith(".traces")
@@ -126,11 +152,7 @@ class TraceStorageManager(
     }
 
     private fun scanForAnnotation(annotationId: UUID): TraceShardId? {
-        for (id in annotationIndex.keys) {
-            annotationIndex[id]?.let { candidate ->
-                if (id == annotationId) return candidate
-            }
-        }
+        annotationIndex[annotationId]?.let { return it }
         for (id in allShardIds()) {
             val state = loadShard(id)
             if (state.annotationById(annotationId) != null) {
@@ -153,7 +175,7 @@ class TraceStorageManager(
         for (sx in minSX..maxSX) {
             for (sz in minSZ..maxSZ) {
                 val state = loadShard(TraceShardId(worldDimensionPath(), sx, sz))
-                out += state.nearbyFootTraces(boundsMin, boundsMax)
+                out += state.nearbyFootTraces(boundsMin, boundsMax).filter { it.levelKey == levelKey }
             }
         }
         return out
@@ -173,6 +195,8 @@ class TraceStorageManager(
     }
 
     fun addFootTrace(trace: FootTrace) {
+        check(!closed) { "Traces storage is closed" }
+        require(trace.levelKey == levelKey) { "trace belongs to ${trace.levelKey}, expected $levelKey" }
         val (sx, sz) = Geometry.worldToShard(trace.blockPos)
         val id = TraceShardId(worldDimensionPath(), sx, sz)
         val shard = loadShard(id)
@@ -184,6 +208,7 @@ class TraceStorageManager(
     }
 
     fun addAnnotation(annotation: TraceAnnotation) {
+        check(!closed) { "Traces storage is closed" }
         val (sx, sz) = Geometry.worldToShard(annotation.position)
         val id = TraceShardId(worldDimensionPath(), sx, sz)
         val shard = loadShard(id)
@@ -222,6 +247,7 @@ class TraceStorageManager(
     }
 
     fun setSeen(player: UUID, annotation: UUID, revision: Int) {
+        if (closed || revision < 0) return
         val shardId = locateSeenStateShard(annotation) ?: return
         val shard = loadShard(shardId)
         synchronized(shard) {
@@ -242,19 +268,10 @@ class TraceStorageManager(
     }
 
     fun getSeen(player: UUID, annotation: UUID): Int {
-        var best = 0
-        for (shard in cache.valuesSnapshot()) {
-            shard.seenStatesSnapshot()
-                .firstOrNull { it.annotationId == annotation && it.playerId == player }
-                ?.let { if (it.highestRevision > best) best = it.highestRevision }
-        }
-        for (id in allShardIds()) {
-            val state = loadShard(id)
-            state.seenStatesSnapshot()
-                .firstOrNull { it.annotationId == annotation && it.playerId == player }
-                ?.let { if (it.highestRevision > best) best = it.highestRevision }
-        }
-        return best
+        val shardId = annotationIndex[annotation] ?: return 0
+        return loadShard(shardId).seenStatesSnapshot()
+            .firstOrNull { it.annotationId == annotation && it.playerId == player }
+            ?.highestRevision ?: 0
     }
 
     fun removeByPosition(pos: BlockPos) {
@@ -267,6 +284,24 @@ class TraceStorageManager(
                 if (state.dirty) markDirty(id)
             }
         }
+    }
+
+    fun removeFootTraces(boundsMin: BlockPos, boundsMax: BlockPos): Int {
+        val (minSX, minSZ) = Geometry.worldToShard(boundsMin)
+        val (maxSX, maxSZ) = Geometry.worldToShard(boundsMax)
+        var removed = 0
+        for (sx in minSX..maxSX) {
+            for (sz in minSZ..maxSZ) {
+                val id = TraceShardId(worldDimensionPath(), sx, sz)
+                val state = loadShard(id)
+                val shardRemoved = state.removeFootTraces(boundsMin, boundsMax)
+                if (shardRemoved > 0) {
+                    removed += shardRemoved
+                    markDirty(id)
+                }
+            }
+        }
+        return removed
     }
 
     fun weakenAround(pos: BlockPos, radius: Int, factor: Double) {
@@ -319,6 +354,14 @@ class TraceStorageManager(
         return out
     }
 
+    fun allAnnotations(): List<TraceAnnotation> {
+        val seen = HashSet<UUID>()
+        val out = mutableListOf<TraceAnnotation>()
+        allStorageShards().forEach { state -> state.annotationsSnapshot().filterTo(out) { seen.add(it.id) } }
+        allShardIds().forEach { id -> loadShard(id).annotationsSnapshot().filterTo(out) { seen.add(it.id) } }
+        return out
+    }
+
     fun allLivingFootTraces(): List<FootTrace> {
         return allStorageShards().flatMap { state ->
             state.footTracesSnapshot().filter { it.surviving }
@@ -337,8 +380,8 @@ class TraceStorageManager(
         try {
             writeSnapshot(id, snapshot)
             shard.clearDirtyIfUnchanged(generation)
-        } catch (_: Exception) {
-            log.warn("Failed to flush trace shard {}", id)
+        } catch (error: Exception) {
+            log.warn("Failed to flush trace shard {}", id, error)
         }
     }
 
@@ -349,6 +392,7 @@ class TraceStorageManager(
     }
 
     fun tickFlush() {
+        if (closed) return
         pruneCompletedFlushes()
         if (pendingFlushes.size >= config.saveQueueMax.get()) return
         for (id in cache.takeAllDirty()) {
@@ -390,10 +434,40 @@ class TraceStorageManager(
     }
 
     fun close() {
-        tickFlush()
+        if (closed) return
+        closed = true
+        pruneCompletedFlushes()
+        for (id in cache.takeAllDirty()) {
+            if (!queuedFlushes.add(id)) continue
+            pendingFlushes += dirtyExecutor.submit {
+                try { flush(id) } finally { queuedFlushes.remove(id) }
+            }
+        }
         dirtyExecutor.shutdown()
-        dirtyExecutor.awaitTermination(5, TimeUnit.SECONDS)
+        if (!dirtyExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+            dirtyExecutor.shutdownNow()
+            log.error("Timed out draining Traces flush executor for {}", levelKey)
+        }
         waitForPendingFlushes(2000)
+        val failures = mutableListOf<Exception>()
+        for (id in cache.takeAllDirty()) {
+            val (snapshot, generation) = cache.get(id)?.snapshot() ?: continue
+            try {
+                writeSnapshot(id, snapshot)
+                cache.get(id)?.clearDirtyIfUnchanged(generation)
+            } catch (error: Exception) {
+                failures += error
+            }
+        }
+        for ((id, snapshot) in evictedPending.entries.toList()) {
+            try {
+                writeSnapshot(id, snapshot)
+                evictedPending.remove(id, snapshot)
+            } catch (error: Exception) {
+                failures += error
+            }
+        }
+        if (failures.isNotEmpty()) throw IllegalStateException("Failed to persist ${failures.size} Traces shard(s) during shutdown", failures.first())
     }
 }
 

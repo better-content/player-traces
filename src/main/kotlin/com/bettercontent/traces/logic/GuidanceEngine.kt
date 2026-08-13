@@ -1,104 +1,124 @@
 package com.bettercontent.traces.logic
 
-import com.bettercontent.traces.domain.GuidanceSignal
-import com.bettercontent.traces.dto.VisibleAnnotationDto
-import com.bettercontent.traces.dto.VisibleTraceDto
+import com.bettercontent.traces.domain.FootTrace
+import com.bettercontent.traces.domain.TraceAnnotation
+import com.bettercontent.traces.dto.GuidanceBuildResult
+import com.bettercontent.traces.dto.GuidanceRouteDto
+import com.bettercontent.traces.dto.GuidancePointDto
 import net.minecraft.core.BlockPos
+import net.minecraft.world.phys.Vec3
+import java.util.UUID
+import kotlin.math.sqrt
 
 object GuidanceEngine {
-    private const val MAX_STEP = 5
+    const val ATTACH_DISTANCE = 5
+    const val MAX_ROUTES = 256
+    const val MAX_TOTAL_POINTS = 4096
 
-    fun buildSignals(traces: List<VisibleTraceDto>, annotations: List<VisibleAnnotationDto>, player: BlockPos): List<GuidanceSignal> {
-        if (traces.isEmpty() || annotations.isEmpty()) return emptyList()
-        val target = annotations.minByOrNull {
-            val dx = it.x - player.x
-            val dz = it.z - player.z
-            (dx * dx + dz * dz)
-        } ?: return emptyList()
+    fun buildRoutes(
+        traces: List<FootTrace>, annotations: List<TraceAnnotation>, viewer: UUID, player: BlockPos,
+        seenRevision: (UUID) -> Int, maxRoutes: Int = MAX_ROUTES, maxPoints: Int = MAX_TOTAL_POINTS,
+    ): GuidanceBuildResult = buildRoutes(
+        traces, annotations, viewer, Vec3(player.x + 0.5, player.y.toDouble(), player.z + 0.5), seenRevision, maxRoutes, maxPoints,
+    )
 
-        val targetPos = BlockPos(target.x, target.y, target.z)
-        val startIdx = nearestIndex(traces, player, MAX_STEP * MAX_STEP)
-        val endIdx = nearestIndex(traces, targetPos, MAX_STEP * MAX_STEP)
-        if (startIdx < 0 || endIdx < 0 || startIdx == endIdx) return emptyList()
+    fun buildRoutes(
+        traces: List<FootTrace>,
+        annotations: List<TraceAnnotation>,
+        viewer: UUID,
+        player: Vec3,
+        seenRevision: (UUID) -> Int,
+        maxRoutes: Int = MAX_ROUTES,
+        maxPoints: Int = MAX_TOTAL_POINTS,
+    ): GuidanceBuildResult {
+        if (traces.isEmpty() || annotations.isEmpty() || maxRoutes <= 0 || maxPoints <= 0) {
+            return GuidanceBuildResult(0, emptyList(), false)
+        }
 
-        val graph = buildAdjacency(traces)
-        val path = shortestPath(graph, startIdx, endIdx)
-        if (path.isEmpty()) return emptyList()
+        val sequences = traces.asSequence()
+            .filter { it.surviving }
+            .groupBy { it.sequenceId }
+            .values
+            .map { sequence ->
+                sequence.sortedWith(compareBy<FootTrace> { it.sequenceIndex }.thenBy { it.id })
+                    .distinctBy { it.sequenceIndex }
+            }
+            .filter { it.size >= 2 }
+            .toList()
+        val candidates = annotations.filter {
+            it.createdByInternal != viewer && it.revision > seenRevision(it.id)
+        }
 
-        val pathPositions = path.map { traces[it] }.map { BlockPos(it.x, it.y, it.z) }
-        val t = ((System.nanoTime() % 1_000_000_000L).toFloat() / 1_000_000_000f)
-        return listOf(
-            GuidanceSignal(
-                targetAnnotationId = target.id,
-                path = pathPositions,
-                intensity = 1f,
-                phase = t,
-                shimmer = 0.5f,
-                directionPulse = 0.9f
-            )
-        )
+        val routes = candidates.mapNotNull { annotation ->
+            bestRoute(sequences, player, annotation)?.let { (path, distance) ->
+                distance to GuidanceRouteDto(annotation.id.toString(), annotation.revision, path)
+            }
+        }.sortedWith(compareBy<Pair<Double, GuidanceRouteDto>> { it.first }.thenBy { it.second.targetAnnotationId })
+
+        val accepted = mutableListOf<GuidanceRouteDto>()
+        var acceptedPoints = 0
+        for ((_, route) in routes) {
+            if (accepted.size >= maxRoutes || acceptedPoints + route.path.size > maxPoints) continue
+            accepted += route
+            acceptedPoints += route.path.size
+        }
+        return GuidanceBuildResult(routes.size, accepted, accepted.size != routes.size)
     }
 
-    private fun buildAdjacency(traces: List<VisibleTraceDto>): List<List<Int>> {
-        val out = MutableList(traces.size) { mutableListOf<Int>() }
-        val bySequenceIndex = traces.withIndex().associateBy { it.value.sequenceId to it.value.sequenceIndex }
-        for ((index, trace) in traces.withIndex()) {
-            val previous = bySequenceIndex[trace.sequenceId to (trace.sequenceIndex - 1)]?.index
-            val next = bySequenceIndex[trace.sequenceId to (trace.sequenceIndex + 1)]?.index
-            listOfNotNull(previous, next).forEach { adjacent ->
-                val other = traces[adjacent]
-                val dx = trace.x - other.x
-                val dz = trace.z - other.z
-                if (dx * dx + dz * dz <= MAX_STEP * MAX_STEP && adjacent !in out[index]) {
-                    out[index].add(adjacent)
-                    out[adjacent].add(index)
+    private fun bestRoute(
+        sequences: List<List<FootTrace>>,
+        player: Vec3,
+        annotation: TraceAnnotation,
+    ): Pair<List<GuidancePointDto>, Double>? {
+        var bestPath: List<GuidancePointDto>? = null
+        var bestDistance = Double.POSITIVE_INFINITY
+        for (sequence in sequences) {
+            val starts = nearestAttachments(sequence, player)
+            if (starts.isEmpty()) continue
+            val ends = nearestAttachments(sequence, Vec3(annotation.position.x + 0.5, annotation.position.y.toDouble(), annotation.position.z + 0.5))
+            for (start in starts) {
+                for (end in ends) {
+                    if (start == end) continue
+                    val path = contiguousPath(sequence, start, end) ?: continue
+                    val distance = path.zipWithNext().sumOf { (a, b) -> distance(a, b) }
+                    if (distance < bestDistance) {
+                        bestDistance = distance
+                        bestPath = path
+                    }
                 }
             }
         }
-        return out
+        return bestPath?.let { it to bestDistance }
     }
 
-    private fun nearestIndex(traces: List<VisibleTraceDto>, pos: BlockPos, maxDistanceSquared: Int): Int {
-        var bestIdx = -1
-        var best = Int.MAX_VALUE
-        for (i in traces.indices) {
-            val t = traces[i]
-            val dx = t.x - pos.x
-            val dz = t.z - pos.z
-            val dy = t.y - pos.y
-            val dist = dx * dx + dy * dy + dz * dz
-            if (dist < best) {
-                best = dist
-                bestIdx = i
-            }
+    private fun contiguousPath(sequence: List<FootTrace>, start: Int, end: Int): List<GuidancePointDto>? {
+        val low = minOf(start, end)
+        val high = maxOf(start, end)
+        for (index in low until high) {
+            val current = sequence[index]
+            val next = sequence[index + 1]
+            if (next.sequenceIndex != current.sequenceIndex + 1) return null
+            if (distanceSquared(current.x, current.y, current.z, next.x, next.y, next.z) > ATTACH_DISTANCE * ATTACH_DISTANCE) return null
         }
-        return if (best <= maxDistanceSquared) bestIdx else -1
+        val path = sequence.subList(low, high + 1).map { GuidancePointDto(it.x, it.y, it.z) }
+        return if (start <= end) path else path.asReversed()
     }
 
-    private fun shortestPath(graph: List<List<Int>>, start: Int, goal: Int): List<Int> {
-        val q = ArrayDeque<Int>()
-        val prev = IntArray(graph.size) { -1 }
-        val seen = BooleanArray(graph.size)
-        q.add(start)
-        seen[start] = true
-        while (q.isNotEmpty()) {
-            val u = q.removeFirst()
-            if (u == goal) break
-            for (v in graph[u]) {
-                if (seen[v]) continue
-                seen[v] = true
-                prev[v] = u
-                q.add(v)
-            }
+    private fun nearestAttachments(sequence: List<FootTrace>, position: Vec3): List<Int> {
+        val distances = sequence.indices.map { index ->
+            val trace = sequence[index]
+            index to distanceSquared(trace.x, trace.y, trace.z, position.x, position.y, position.z)
         }
-        if (!seen[goal]) return emptyList()
-        val path = ArrayList<Int>()
-        var cur = goal
-        while (cur >= 0) {
-            path.add(cur)
-            cur = prev[cur]
-        }
-        path.reverse()
-        return path
+        val nearest = distances.minOfOrNull { it.second } ?: return emptyList()
+        if (nearest > ATTACH_DISTANCE * ATTACH_DISTANCE) return emptyList()
+        return distances.filter { kotlin.math.abs(it.second - nearest) < 1.0e-9 }.map { it.first }
+    }
+
+    private fun distance(a: GuidancePointDto, b: GuidancePointDto): Double =
+        sqrt(distanceSquared(a.x, a.y, a.z, b.x, b.y, b.z))
+
+    private fun distanceSquared(ax: Double, ay: Double, az: Double, bx: Double, by: Double, bz: Double): Double {
+        val dx = ax - bx; val dy = ay - by; val dz = az - bz
+        return dx * dx + dy * dy + dz * dz
     }
 }

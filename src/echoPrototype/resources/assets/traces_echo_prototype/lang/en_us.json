@@ -1,0 +1,7 @@
+{
+  "key.categories.traces_echo_prototype": "Traces Echo Prototype",
+  "key.traces_echo_prototype.quark_wave": "Trigger Quark Wave",
+  "key.traces_echo_prototype.synthetic": "Toggle Synthetic PlayerAnimator Bend",
+  "key.traces_echo_prototype.duration": "Cycle Echo Recording Duration",
+  "key.traces_echo_prototype.record": "Record / Cancel Echo"
+}

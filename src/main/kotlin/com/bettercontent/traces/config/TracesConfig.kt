@@ -20,10 +20,16 @@ object TracesConfig {
         val rainExposureFactor = builder.defineInRange("rainExposureFactor", 0.91, 0.01, 1.0)
         val devVisualFixture = builder.define("devVisualFixture", false)
         val maxPayloadTraces = builder.defineInRange("maxPayloadTraces", 512, 64, 4096)
+        val maxPayloadAnnotations = builder.defineInRange("maxPayloadAnnotations", 256, 16, 4096)
+        val maxBloodPools = builder.defineInRange("maxBloodPoolsPerDimension", 512, 16, 4096)
+        val maxDeathEchoes = builder.defineInRange("maxDeathEchoesPerDimension", 128, 8, 1024)
+        val maxDeathEchoesPerPlayer = builder.defineInRange("maxDeathEchoesPerPlayer", 8, 1, 64)
+        val maxPayloadBloodPools = builder.defineInRange("maxPayloadBloodPools", 64, 1, 256)
+        val maxPayloadDeathEchoes = builder.defineInRange("maxPayloadDeathEchoes", 8, 1, 32)
     }
 
     class Client(builder: ForgeConfigSpec.Builder) {
-        val enableRevealDefault = builder.define("revealByDefault", true)
+        val enableRevealDefault = builder.define("revealByDefault", false)
         val guidanceStrengthFloor = builder.defineInRange("guidanceStrengthFloor", 0.03, 0.0, 1.0)
         val referenceDensity = builder.defineInRange("referenceDensity", 8.0, 1.0, 64.0)
         val minVisibleAlpha = builder.defineInRange("minVisibleAlpha", 0.07, 0.0, 1.0)
@@ -32,6 +38,5 @@ object TracesConfig {
         val guidancePulseSpeed = builder.defineInRange("guidancePulseSpeed", 0.08, 0.01, 1.0)
         val annotationLabelDistance = builder.defineInRange("annotationLabelDistance", 18, 4, 64)
         val visualDiagnostics = builder.define("visualDiagnostics", false)
-        val worldDesaturation = builder.defineInRange("worldDesaturation", 0.8, 0.0, 1.0)
     }
 }

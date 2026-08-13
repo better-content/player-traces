@@ -1,5 +1,8 @@
 {
   "key.categories.traces": "Traces",
   "key.traces.reveal": "Reveal Traces",
+  "key.traces.annotation": "Create or Edit Trace Note",
+  "message.traces.enabled": "Trace sight enabled • N: create/edit note",
+  "message.traces.disabled": "Trace sight disabled",
   "item.traces.foot_traffic_probe": "Foot Traffic Probe"
 }

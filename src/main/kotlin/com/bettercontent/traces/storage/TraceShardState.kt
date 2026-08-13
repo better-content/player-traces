@@ -38,6 +38,9 @@ class TraceShardState {
     fun footTracesSnapshot(): List<FootTrace> = footTraces.toList()
 
     @Synchronized
+    fun annotationsSnapshot(): List<TraceAnnotation> = annotations.toList()
+
+    @Synchronized
     internal fun seenStatesSnapshot(): List<SeenStateRecord> = seenStates.toList()
 
     @Synchronized
@@ -64,6 +67,18 @@ class TraceShardState {
         val before = footTraces.size
         footTraces.removeIf { it.blockPos.x == position.x && it.blockPos.y == position.y && it.blockPos.z == position.z }
         if (footTraces.size != before) markDirty()
+    }
+
+    @Synchronized
+    fun removeFootTraces(boundsMin: BlockPos, boundsMax: BlockPos): Int {
+        val before = footTraces.size
+        footTraces.removeIf { trace ->
+            val pos = trace.blockPos
+            pos.x in boundsMin.x..boundsMax.x && pos.y in boundsMin.y..boundsMax.y && pos.z in boundsMin.z..boundsMax.z
+        }
+        val removed = before - footTraces.size
+        if (removed > 0) markDirty()
+        return removed
     }
 
     @Synchronized

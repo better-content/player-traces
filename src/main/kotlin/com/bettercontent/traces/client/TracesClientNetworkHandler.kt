@@ -1,7 +1,6 @@
 package com.bettercontent.traces.client
 
 import com.bettercontent.traces.network.TraceQueryResponsePacket
-import com.bettercontent.traces.network.TracesNetwork
 
 object TracesClientNetworkHandler {
     fun accept(payload: TraceQueryResponsePacket) {
@@ -14,6 +13,5 @@ object TracesClientNetworkHandler {
                 TracesClientState.overlayEnabled,
             )
         }
-        TracesNetwork.acknowledgeAnnotations(payload.annotations.filter { !it.seen })
     }
 }

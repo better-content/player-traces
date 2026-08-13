@@ -10,6 +10,6 @@ import java.util.UUID
 interface AnnotationApi {
     fun annotationsWithin(level: Level, boundsMin: BlockPos, boundsMax: BlockPos, viewer: Player?): AnnotationViewResult
     fun create(level: Level, viewer: Player, text: String, icon: String, color: Int, target: BlockPos): TraceAnnotation
-    fun update(level: Level, viewer: Player, id: UUID, text: String?, icon: String?, color: Int?): TraceAnnotation
-    fun delete(level: Level, viewer: Player, id: UUID): Boolean
+    fun update(level: Level, viewer: Player, id: UUID, expectedRevision: Int, text: String?, icon: String?, color: Int?): TraceAnnotation
+    fun delete(level: Level, viewer: Player, id: UUID, expectedRevision: Int): Boolean
 }

@@ -1,14 +1,13 @@
 plugins {
-    kotlin("jvm") version "1.9.24"
-    kotlin("plugin.serialization") version "1.9.24"
+    kotlin("jvm") version "2.2.21"
     id("net.minecraftforge.gradle") version "6.0.24"
 }
 
 val minecraftVersion = "1.20.1"
-val forgeVersion = "47.4.0"
-val kotlinVersion = "1.9.24"
+val forgeVersion = "47.4.13"
 val visualValidationRun = providers.gradleProperty("tracesVisual").orNull == "true"
 val shaderCompatibilityValidation = providers.gradleProperty("tracesShaderCompat").orNull == "true"
+val echoPrototypeEnabled = providers.gradleProperty("tracesModCacheDir").isPresent
 
 base {
     archivesName.set("traces")
@@ -22,6 +21,12 @@ java.toolchain.languageVersion.set(JavaLanguageVersion.of(17))
 repositories {
     mavenCentral()
     maven("https://maven.minecraftforge.net")
+    maven("https://thedarkcolour.github.io/KotlinForForge/")
+    providers.gradleProperty("tracesModCacheDir").orNull?.let { modCacheDir ->
+        flatDir {
+            dirs(file(modCacheDir))
+        }
+    }
     if (shaderCompatibilityValidation) {
         flatDir {
             dirs(layout.buildDirectory.dir("shader-compat/deps"))
@@ -31,16 +36,7 @@ repositories {
 
 dependencies {
     minecraft("net.minecraftforge:forge:${minecraftVersion}-${forgeVersion}")
-    implementation("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
-    implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlinVersion")
-    implementation("org.jetbrains.kotlin:kotlin-reflect:$kotlinVersion")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
-    minecraftLibrary("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
-    minecraftLibrary("org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlinVersion")
-    minecraftLibrary("org.jetbrains.kotlin:kotlin-reflect:$kotlinVersion")
-    minecraftLibrary("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
-    minecraftLibrary("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+    implementation("thedarkcolour:kotlinforforge:4.12.0")
     if (shaderCompatibilityValidation) {
         runtimeOnly(fg.deobf("shader.compat:embeddium:0.3.31+mc1.20.1"))
         runtimeOnly(fg.deobf("shader.compat:oculus-mc1.20.1:1.8.0"))
@@ -49,6 +45,17 @@ dependencies {
 }
 
 sourceSets {
+    create("echoPrototype") {
+        compileClasspath += sourceSets["main"].output + sourceSets["main"].compileClasspath
+        runtimeClasspath += sourceSets["main"].output + sourceSets["main"].runtimeClasspath + output
+        kotlin {
+            setSrcDirs(listOf("src/echoPrototype/kotlin"))
+        }
+        resources {
+            setSrcDirs(listOf("src/echoPrototype/resources"))
+        }
+    }
+
     create("gametest") {
         compileClasspath += sourceSets["main"].output + sourceSets["main"].compileClasspath + sourceSets["test"].runtimeClasspath
         runtimeClasspath += sourceSets["main"].output + sourceSets["test"].runtimeClasspath + sourceSets["main"].runtimeClasspath + sourceSets["gametest"].output
@@ -62,12 +69,30 @@ sourceSets {
 }
 
 configurations["gametestImplementation"].extendsFrom(configurations["testImplementation"])
+configurations["echoPrototypeImplementation"].extendsFrom(configurations["implementation"])
+configurations["echoPrototypeRuntimeOnly"].extendsFrom(configurations["runtimeOnly"])
+
+dependencies {
+    if (echoPrototypeEnabled) {
+        "echoPrototypeRuntimeOnly"(fg.deobf("echo.prototype:Zeta:1.0-31"))
+        "echoPrototypeRuntimeOnly"(fg.deobf("echo.prototype:Quark:4.0-462"))
+        "echoPrototypeImplementation"(fg.deobf("echo.prototype:player-animation-lib-forge:1.0.2-rc1+1.20"))
+        testImplementation(sourceSets["echoPrototype"].output)
+    }
+}
+
+if (!echoPrototypeEnabled) {
+    sourceSets["test"].kotlin.exclude("**/EchoPrototypeTest.kt")
+    tasks.configureEach {
+        if (name.contains("EchoPrototype", ignoreCase = true)) enabled = false
+    }
+}
 
 minecraft {
     mappings("official", minecraftVersion)
 
     runs {
-        create("client") {
+        val baseClient = create("client") {
             workingDirectory(project.file(if (visualValidationRun) "build/visual-run" else "run"))
             if (visualValidationRun) {
                 args("--quickPlaySingleplayer", "Traces Visual", "--width", "1280", "--height", "720")
@@ -83,6 +108,22 @@ minecraft {
                 create("traces") {
                     source(sourceSets["main"])
                     source(sourceSets["test"])
+                }
+            }
+        }
+
+        create("echoPrototypeClient") {
+            parent(baseClient)
+            workingDirectory(project.file("build/echo-prototype-run"))
+            args("--quickPlaySingleplayer", "Echo Prototype", "--width", "1280", "--height", "720")
+            property("traces.echoPrototype", "true")
+            property("traces.visualValidation", "true")
+            property("mixin.env.remapRefMap", "true")
+            property("mixin.env.refMapRemappingFile", project.file("build/createSrgToMcp/output.srg").absolutePath)
+            property("forge.logging.console.level", "info")
+            mods {
+                create("traces_echo_prototype") {
+                    source(sourceSets["echoPrototype"])
                 }
             }
         }
@@ -117,14 +158,25 @@ minecraft {
 }
 
 tasks {
+    jar {
+        // Keep the development artifact from ever sharing the pack-facing filename.
+        // ForgeGradle's reobfJar consumes this classifier just fine, while the
+        // staged runtime JAR below remains the only unclassified artifact.
+        archiveClassifier.set("dev")
+    }
+
     withType<JavaCompile> {
         options.encoding = "UTF-8"
     }
 
+    test {
+        useJUnitPlatform()
+    }
+
     withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-        kotlinOptions {
-            jvmTarget = "17"
-            freeCompilerArgs = listOf("-Xjsr305=strict")
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+            freeCompilerArgs.add("-Xjsr305=strict")
         }
     }
 
@@ -132,6 +184,25 @@ tasks {
         group = "verification"
         description = "Compile + unit checks for fast feedback"
         dependsOn("compileKotlin", "compileJava", "test")
+    }
+
+    register("verifyEchoPrototype") {
+        group = "verification"
+        description = "Compile the non-shipping echo prototype and run its focused codec tests"
+        dependsOn("compileEchoPrototypeKotlin", "test")
+    }
+
+    register<Sync>("prepareEchoPrototypeWorld") {
+        group = "verification"
+        description = "Prepare the disposable one-world echo prototype client"
+        from("run/saves/New World")
+        into(layout.buildDirectory.dir("echo-prototype-run/saves/Echo Prototype"))
+        exclude("session.lock", "data/traces/**")
+        doLast {
+            val options = layout.buildDirectory.file("echo-prototype-run/options.txt").get().asFile
+            options.parentFile.mkdirs()
+            if (!options.exists()) options.writeText("tutorialStep:none\n")
+        }
     }
 
     register("headlessGameTest") {
@@ -172,7 +243,6 @@ tasks {
                 guidancePulseSpeed = 0.08
                 annotationLabelDistance = 32
                 visualDiagnostics = true
-                worldDesaturation = 0.8
             """.trimIndent() + "\n")
             val serverConfig = runDir.resolve("saves/Traces Visual/serverconfig/traces-server.toml")
             serverConfig.parentFile.mkdirs()
@@ -190,8 +260,27 @@ tasks {
     }
 }
 
+val stageRuntimeJar by tasks.registering(Copy::class) {
+    group = "build"
+    description = "Stages the reobfuscated runtime jar under the canonical pack filename."
+    dependsOn(tasks.named("reobfJar"))
+    from(layout.buildDirectory.file("reobfJar/output.jar"))
+    into(layout.buildDirectory.dir("libs"))
+    rename { "traces-$version.jar" }
+}
+
+tasks.named("assemble") {
+    dependsOn(stageRuntimeJar)
+}
+
 tasks.matching {
     it.name == "runGameTestServer"
 }.configureEach {
     dependsOn("prepareGametestStructures")
+}
+
+tasks.matching {
+    it.name == "runEchoPrototypeClient"
+}.configureEach {
+    dependsOn("prepareEchoPrototypeWorld")
 }

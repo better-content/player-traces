@@ -4,11 +4,11 @@ import com.bettercontent.traces.TracesMod
 import com.bettercontent.traces.logic.TraceQueryService
 import com.google.gson.GsonBuilder
 import com.mojang.brigadier.arguments.StringArgumentType
+import com.mojang.brigadier.arguments.FloatArgumentType
 import net.minecraft.ChatFormatting
 import net.minecraft.commands.CommandSourceStack
 import net.minecraft.commands.Commands
 import net.minecraft.network.chat.Component
-import net.minecraft.world.phys.BlockHitResult
 import java.util.Locale
 import java.util.UUID
 
@@ -91,72 +91,6 @@ object TracesCommands {
                         )
                 )
                 .then(
-                    Commands.literal("annotation")
-                        .then(
-                            Commands.literal("create").then(
-                                Commands.argument("text", StringArgumentType.greedyString())
-                                    .executes { ctx ->
-                                        val player = ctx.source.player ?: return@executes 0
-                                        val text = StringArgumentType.getString(ctx, "text")
-                                        val service = TracesMod.getRuntime(player.server).annotations(player.serverLevel())
-                                        val hit = player.pick(6.0, 0f, false)
-                                        val target = (hit as? BlockHitResult)?.blockPos ?: player.blockPosition()
-                                        val ann = service.create(player.serverLevel(), player, text, "pin", 0x00AAFF, target)
-                                        ctx.source.sendSystemMessage(Component.literal("annotation created: ${ann.id}"))
-                                        1
-                                    }
-                            )
-                        )
-                        .then(
-                            Commands.literal("delete").then(
-                                Commands.argument("id", StringArgumentType.string())
-                                    .executes { ctx ->
-                                        val player = ctx.source.player ?: return@executes 0
-                                        val service = TracesMod.getRuntime(player.server).annotations(player.serverLevel())
-                                        val id = runCatching { UUID.fromString(StringArgumentType.getString(ctx, "id")) }.getOrNull()
-                                        if (id == null) {
-                                            ctx.source.sendSystemMessage(Component.literal("annotation id is not a valid uuid"))
-                                            return@executes 0
-                                        }
-                                        val ok = try {
-                                            service.delete(player.serverLevel(), player, id)
-                                        } catch (error: Exception) {
-                                            ctx.source.sendSystemMessage(Component.literal(error.message ?: "annotation delete denied"))
-                                            return@executes 0
-                                        }
-                                        ctx.source.sendSystemMessage(Component.literal(if (ok) "annotation deleted" else "annotation delete denied"))
-                                        1
-                                    }
-                            )
-                        )
-                        .then(
-                            Commands.literal("update").then(
-                                Commands.argument("id", StringArgumentType.string())
-                                    .then(
-                                        Commands.argument("text", StringArgumentType.greedyString())
-                                            .executes { ctx ->
-                                                val player = ctx.source.player ?: return@executes 0
-                                                val id = runCatching { UUID.fromString(StringArgumentType.getString(ctx, "id")) }.getOrNull()
-                                                if (id == null) {
-                                                    ctx.source.sendSystemMessage(Component.literal("annotation id is not a valid uuid"))
-                                                    return@executes 0
-                                                }
-                                                val text = StringArgumentType.getString(ctx, "text")
-                                                val service = TracesMod.getRuntime(player.server).annotations(player.serverLevel())
-                                                val ann = try {
-                                                    service.update(player.serverLevel(), player, id, text, null, null)
-                                                } catch (error: Exception) {
-                                                    ctx.source.sendSystemMessage(Component.literal(error.message ?: "annotation update denied"))
-                                                    return@executes 0
-                                                }
-                                                ctx.source.sendSystemMessage(Component.literal("annotation updated: ${ann.id}"))
-                                                1
-                                            }
-                                    )
-                            )
-                        )
-                )
-                .then(
                     Commands.literal("export").then(
                         Commands.argument("format", StringArgumentType.word())
                             .executes { ctx ->
@@ -195,6 +129,52 @@ object TracesCommands {
                 .then(
                     Commands.literal("dev")
                         .requires { it.hasPermission(2) || com.bettercontent.traces.config.TracesConfig.common.devVisualFixture.get() || java.lang.Boolean.getBoolean("traces.visualValidation") }
+                        .then(
+                            Commands.literal("preparecapture")
+                                .executes { ctx ->
+                                    val player = ctx.source.player ?: return@executes 0
+                                    TracesMod.getRuntime(player.server).preparePlayerCaptureFixture(player.serverLevel(), player)
+                                    ctx.source.sendSuccess({ Component.literal("player capture fixture prepared") }, false)
+                                    1
+                                }
+                        )
+                        .then(
+                            Commands.literal("captureyaw")
+                                .then(Commands.argument("degrees", FloatArgumentType.floatArg(-180f, 180f))
+                                    .executes { ctx ->
+                                        val player = ctx.source.player ?: return@executes 0
+                                        TracesMod.getRuntime(player.server).setPlayerCaptureYaw(
+                                            player.serverLevel(), player, FloatArgumentType.getFloat(ctx, "degrees"),
+                                        )
+                                        1
+                                    }
+                                )
+                        )
+                        .then(
+                            Commands.literal("verifycapture")
+                                .executes { ctx ->
+                                    val player = ctx.source.player ?: return@executes 0
+                                    TracesMod.getRuntime(player.server).verifyPlayerCaptureFixture(player.serverLevel(), player)
+                                    ctx.source.sendSuccess({ Component.literal("player capture verified") }, false)
+                                    1
+                                }
+                        )
+                        .then(
+                            Commands.literal("die")
+                                .executes { ctx ->
+                                    val player = ctx.source.player ?: return@executes 0
+                                    player.kill()
+                                    1
+                                }
+                        )
+                        .then(
+                            Commands.literal("deathview")
+                                .executes { ctx ->
+                                    val player = ctx.source.player ?: return@executes 0
+                                    TracesMod.getRuntime(player.server).prepareDeathTraceView(player.serverLevel(), player)
+                                    1
+                                }
+                        )
                         .then(
                             Commands.literal("fixture")
                                 .executes { ctx ->
