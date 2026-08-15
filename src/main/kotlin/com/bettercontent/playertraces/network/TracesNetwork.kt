@@ -124,14 +124,13 @@ object TracesNetwork {
                 bloodPools = bloodPools,
                 deathEchoes = deathEchoes,
             )
-            logger.info(
-                "TRACES_MVP_RESPONSE captured={} returned={} footprints={} notes={}",
-                TracesMod.getRuntime(level.server).capturedCount(), response.traces.size + response.annotations.size,
-                response.traces.size, response.annotations.size,
-            )
-            logger.info("TRACES_ANNOTATION_ECHO_ADVERTISED count={}", visibleAnnotations.count { it.hasEcho })
-            logger.info("TRACES_DEATH_RESPONSE pools={} echoes={}", response.bloodPools.size, response.deathEchoes.size)
-            logger.debug("Trace query response: traces={}, annotations={}, radius={}", response.traces.size, response.annotations.size, radius)
+            if (java.lang.Boolean.getBoolean("traces.visualValidation")) {
+                logger.debug(
+                    "Trace query response: traces={}, annotations={}, annotationEchoes={}, bloodPools={}, deathEchoes={}, radius={}",
+                    response.traces.size, response.annotations.size, visibleAnnotations.count { it.hasEcho },
+                    response.bloodPools.size, response.deathEchoes.size, radius,
+                )
+            }
             channel.send(PacketDistributor.PLAYER.with { sender }, response)
         }
         context.packetHandled = true
@@ -280,7 +279,9 @@ object TracesNetwork {
             val echo = id?.let { TracesMod.getRuntime(sender.server).annotationEchoes(sender.serverLevel()).get(it) }
                 ?.takeIf { annotation != null && it.annotationRevision == annotation.revision && it.annotationRevision == msg.echoRevision }
             channel.send(PacketDistributor.PLAYER.with { sender }, AnnotationEchoResponsePacket(msg.annotationId, msg.echoRevision, echo?.encodedClip))
-            logger.info("TRACES_ANNOTATION_ECHO_RESPONSE annotation={} revision={} bytes={}", msg.annotationId, msg.echoRevision, echo?.encodedClip?.size ?: 0)
+            if (java.lang.Boolean.getBoolean("traces.visualValidation")) {
+                logger.debug("Annotation echo response: annotation={}, revision={}, bytes={}", msg.annotationId, msg.echoRevision, echo?.encodedClip?.size ?: 0)
+            }
         }
         context.packetHandled = true
     }

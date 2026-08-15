@@ -73,11 +73,13 @@ object TracesClientState {
         lastPayloadAnnotationCount = annotations.size
         lastPayloadAtMillis = System.currentTimeMillis()
         hasResponse = true
-        TracesClientLog.LOGGER.info(
-            "TRACES_MVP_ACCEPTED accepted={} footprints={} notes={}",
-            traces.size + annotations.size, traces.size, annotations.size,
-        )
-        TracesClientLog.LOGGER.info("TRACES_ANNOTATION_ECHO_CACHE advertised={} cached={}", advertised.size, annotationEchoes.size)
+        if (TracesConfig.client.visualDiagnostics.get()) {
+            TracesClientLog.LOGGER.info(
+                "TRACES_MVP_ACCEPTED accepted={} footprints={} notes={}",
+                traces.size + annotations.size, traces.size, annotations.size,
+            )
+            TracesClientLog.LOGGER.info("TRACES_ANNOTATION_ECHO_CACHE advertised={} cached={}", advertised.size, annotationEchoes.size)
+        }
     }
 
     fun visibleTraces(): List<VisibleTraceDto> = traces.toList()
@@ -94,7 +96,9 @@ object TracesClientState {
             .onFailure { TracesClientLog.LOGGER.warn("Rejected malformed annotation echo {} revision {}", packet.annotationId, packet.echoRevision, it) }
             .getOrNull() ?: return
         if (annotations.any { it.id == packet.annotationId && it.echoRevision == packet.echoRevision }) annotationEchoes[key] = clip
-        TracesClientLog.LOGGER.info("TRACES_ANNOTATION_ECHO_CACHED annotation={} revision={} frames={}", packet.annotationId, packet.echoRevision, clip.frames.size)
+        if (TracesConfig.client.visualDiagnostics.get()) {
+            TracesClientLog.LOGGER.info("TRACES_ANNOTATION_ECHO_CACHED annotation={} revision={} frames={}", packet.annotationId, packet.echoRevision, clip.frames.size)
+        }
     }
 
     fun playingAnnotationEchoes(
