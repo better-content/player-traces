@@ -266,7 +266,7 @@ val stageRuntimeJar by tasks.registering(Copy::class) {
     dependsOn(tasks.named("reobfJar"))
     from(layout.buildDirectory.file("reobfJar/output.jar"))
     into(layout.buildDirectory.dir("libs"))
-    rename { "traces-$version.jar" }
+    rename { "player-traces-$version.jar" }
 }
 
 tasks.named("assemble") {
