@@ -20,6 +20,7 @@ import com.bettercontent.playertraces.client.SurfaceAnchorResolver
 import com.bettercontent.playertraces.client.TraceVisualModel
 import com.bettercontent.playertraces.client.TraceSightOverlayModel
 import com.bettercontent.playertraces.client.TraceSightOverlayTransition
+import com.bettercontent.playertraces.client.OpeningKeyInputGuard
 import com.bettercontent.playertraces.network.TraceQueryResponsePacket
 import com.bettercontent.playertraces.network.TraceAnnotationsSeenPacket
 import net.minecraft.core.BlockPos
@@ -192,6 +193,17 @@ class TraceCoreTest {
     fun revealedFootprintsRefreshContinuouslyWhileWalking() {
         assertEquals(5, com.bettercontent.playertraces.client.TracesClientHandlers.queryIntervalTicks(true))
         assertEquals(100, com.bettercontent.playertraces.client.TracesClientHandlers.queryIntervalTicks(false))
+    }
+
+    @Test
+    fun annotationOpeningKeyIsIgnoredUntilItIsReleased() {
+        val guard = OpeningKeyInputGuard(78)
+        assertTrue(guard.suppressCharacterInput())
+        guard.onKeyReleased(65)
+        assertTrue(guard.suppressCharacterInput())
+        guard.onKeyReleased(78)
+        assertFalse(guard.suppressCharacterInput())
+        assertFalse(OpeningKeyInputGuard(null).suppressCharacterInput())
     }
 
     @Test

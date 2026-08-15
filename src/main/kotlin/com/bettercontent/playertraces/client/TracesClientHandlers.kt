@@ -84,6 +84,7 @@ object TracesClientHandlers {
                     if (existing == null || existing.canEdit) {
                         mc.setScreen(AnnotationEditScreen(
                             hit.blockPos, existing, recent.getOrNull(), recent.exceptionOrNull()?.message.orEmpty(),
+                            openingKeyCode = event.key,
                         ))
                     } else {
                         mc.player?.displayClientMessage(Component.literal("This note belongs to another player"), true)

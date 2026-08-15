@@ -59,11 +59,27 @@ object AnnotationDrafts {
     }
 }
 
-class AnnotationEditScreen(private val draft: AnnotationDraft) :
-    Screen(Component.literal(if (draft.annotation == null) "New Trace Note" else "Edit Trace Note")) {
-    constructor(target: BlockPos, annotation: VisibleAnnotationDto?, recentClip: ByteArray? = null, error: String = "") :
-        this(AnnotationDraft(target, annotation, recentClip = recentClip, error = error))
+internal class OpeningKeyInputGuard(openingKeyCode: Int?) {
+    private var openingKeyCode = openingKeyCode
 
+    fun suppressCharacterInput(): Boolean = openingKeyCode != null
+
+    fun onKeyReleased(keyCode: Int) {
+        if (keyCode == openingKeyCode) openingKeyCode = null
+    }
+}
+
+class AnnotationEditScreen(private val draft: AnnotationDraft, openingKeyCode: Int? = null) :
+    Screen(Component.literal(if (draft.annotation == null) "New Trace Note" else "Edit Trace Note")) {
+    constructor(
+        target: BlockPos,
+        annotation: VisibleAnnotationDto?,
+        recentClip: ByteArray? = null,
+        error: String = "",
+        openingKeyCode: Int? = null,
+    ) : this(AnnotationDraft(target, annotation, recentClip = recentClip, error = error), openingKeyCode)
+
+    private val openingKeyGuard = OpeningKeyInputGuard(openingKeyCode)
     private lateinit var textBox: EditBox
     private lateinit var saveButton: Button
     private lateinit var iconButton: Button
@@ -182,6 +198,14 @@ class AnnotationEditScreen(private val draft: AnnotationDraft) :
         graphics.drawCenteredString(font, title, width / 2, height / 2 - 94, 0xFFFFFF)
         if (draft.error.isNotBlank()) graphics.drawCenteredString(font, draft.error.take(72), width / 2, height / 2 + 18, 0xFF6666)
         super.render(graphics, mouseX, mouseY, partialTick)
+    }
+
+    override fun charTyped(codePoint: Char, modifiers: Int): Boolean =
+        if (openingKeyGuard.suppressCharacterInput()) true else super.charTyped(codePoint, modifiers)
+
+    override fun keyReleased(keyCode: Int, scanCode: Int, modifiers: Int): Boolean {
+        openingKeyGuard.onKeyReleased(keyCode)
+        return super.keyReleased(keyCode, scanCode, modifiers)
     }
 
     override fun isPauseScreen(): Boolean = false
