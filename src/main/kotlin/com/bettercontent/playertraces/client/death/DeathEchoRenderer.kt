@@ -23,16 +23,11 @@ import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-internal const val ECHO_BODY_SCALE = 1.25
-
 internal fun echoWorldVertex(local: Vec3, root: EchoRoot, anchor: Vec3): Vec3 {
-    val scaledX = local.x * ECHO_BODY_SCALE
-    val scaledY = local.y * ECHO_BODY_SCALE
-    val scaledZ = local.z * ECHO_BODY_SCALE
     val yaw = root.bodyYaw.toDouble()
-    val rotatedX = scaledX * cos(yaw) - scaledZ * sin(yaw)
-    val rotatedZ = scaledX * sin(yaw) + scaledZ * cos(yaw)
-    return anchor.add(root.x + rotatedX, root.y + scaledY, root.z + rotatedZ)
+    val rotatedX = local.x * cos(yaw) - local.z * sin(yaw)
+    val rotatedZ = local.x * sin(yaw) + local.z * cos(yaw)
+    return anchor.add(root.x + rotatedX, root.y + local.y, root.z + rotatedZ)
 }
 
 object DeathEchoRenderer {
@@ -232,8 +227,8 @@ object DeathEchoRenderer {
 
     private const val THREAD_SIDES = 4
     private const val OPACITY_SPANS = 6
-    private const val CORE_RADIUS = 0.0075 * ECHO_BODY_SCALE
-    private const val HALO_RADIUS = 0.018 * ECHO_BODY_SCALE
+    private const val CORE_RADIUS = 0.0075
+    private const val HALO_RADIUS = 0.018
     private const val CORE_RGB = 0xA8F8FF
     private const val HALO_RGB = 0x21DFF7
     private const val FULL_BRIGHT = 0x00F000F0

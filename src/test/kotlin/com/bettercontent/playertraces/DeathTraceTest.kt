@@ -1,7 +1,6 @@
 package com.bettercontent.playertraces
 
 import com.bettercontent.playertraces.client.death.deathEchoThreadOpacity
-import com.bettercontent.playertraces.client.death.ECHO_BODY_SCALE
 import com.bettercontent.playertraces.client.death.echoWorldVertex
 import com.bettercontent.playertraces.domain.BloodPoolRecord
 import com.bettercontent.playertraces.domain.DeathEchoRecord
@@ -28,15 +27,15 @@ import java.util.UUID
 
 class DeathTraceTest {
     @Test
-    fun `ghost body is enlarged without scaling recorded movement`() {
+    fun `ghost body uses exact player model scale without scaling recorded movement`() {
         val root = EchoRoot(2f, 3f, 4f, 0f, 0f)
         val anchor = Vec3(10.0, 20.0, 30.0)
 
         val world = echoWorldVertex(Vec3(0.4, 1.0, -0.2), root, anchor)
 
-        assertEquals(12.0 + 0.4 * ECHO_BODY_SCALE, world.x, 0.0001)
-        assertEquals(23.0 + ECHO_BODY_SCALE, world.y, 0.0001)
-        assertEquals(34.0 - 0.2 * ECHO_BODY_SCALE, world.z, 0.0001)
+        assertEquals(12.4, world.x, 0.0001)
+        assertEquals(24.0, world.y, 0.0001)
+        assertEquals(33.8, world.z, 0.0001)
     }
 
     @Test
