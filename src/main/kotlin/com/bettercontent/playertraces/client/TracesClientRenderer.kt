@@ -62,17 +62,22 @@ object TracesClientRenderer {
         val player = mc.player ?: return
         val camera = event.camera
         val distance = TracesConfig.client.maxRenderDistance.get().toDouble() * 16.0
-        val reveal = TracesClientState.overlayEnabled
-        val marks = if (reveal) TraceVisualModel.marks(
+        val nowMillis = net.minecraft.Util.getMillis()
+        val traceVisibility = TraceSightOverlayRenderer.visibility(nowMillis)
+        if (traceVisibility <= 0.001f) {
+            TracesClientState.playingAnnotationEchoes(player.position(), nowMillis, traceSightVisible = false)
+            return
+        }
+        val marks = TraceVisualModel.marks(
             TracesClientState.visibleTraces(), 1f, 0f, TracesConfig.client.maxRenderedMarks.get(),
-        ) else emptyList()
-        val annotations = if (reveal) TracesClientState.visibleAnnotations()
+        )
+        val annotations = TracesClientState.visibleAnnotations()
             .sortedBy { player.distanceToSqr(it.x + 0.5, it.y + 0.5, it.z + 0.5) }
-            .take(MAX_LABELS) else emptyList()
-        val guidance = if (reveal) TracesClientState.visibleGuidance() else emptyList()
+            .take(MAX_LABELS)
+        val guidance = TracesClientState.visibleGuidance()
         val bloodPools = TracesClientState.visibleBloodPools()
-        val deathEchoes = if (reveal) TracesClientState.visibleDeathEchoes() else emptyList()
-        val noteEchoes = TracesClientState.playingAnnotationEchoes(player.position(), System.currentTimeMillis())
+        val deathEchoes = TracesClientState.visibleDeathEchoes()
+        val noteEchoes = TracesClientState.playingAnnotationEchoes(player.position(), nowMillis, traceSightVisible = true)
         if (marks.isEmpty() && annotations.isEmpty() && guidance.isEmpty() && bloodPools.isEmpty() && deathEchoes.isEmpty() && noteEchoes.isEmpty()) return
 
         val pose = event.poseStack
@@ -88,7 +93,7 @@ object TracesClientRenderer {
                     !event.frustum.isVisible(AABB(center, center).inflate(1.5, 0.25, 1.5))
                 ) return@forEach
                 emitBloodPool(
-                    buffer.getBuffer(TracesRenderTypes.bloodPools), pose.last().pose(), level, pool,
+                    buffer.getBuffer(TracesRenderTypes.bloodPools), pose.last().pose(), level, pool, traceVisibility,
                 )
                 drawable++
                 submitted++
@@ -98,7 +103,7 @@ object TracesClientRenderer {
             val guidanceConsumer = buffer.getBuffer(TracesRenderTypes.guidance)
             val animationSeconds = (level.gameTime + event.partialTick).toDouble() / 20.0
             guidanceSegments.values.forEach { segment ->
-                emitGuidanceSegment(guidanceConsumer, pose.last().pose(), segment, animationSeconds)
+                emitGuidanceSegment(guidanceConsumer, pose.last().pose(), segment, animationSeconds, traceVisibility)
             }
             val drawableFootprints = marks.mapNotNull { mark ->
                 val pos = BlockPos.containing(mark.trace.x, mark.trace.y, mark.trace.z)
@@ -113,7 +118,7 @@ object TracesClientRenderer {
             drawableFootprints.forEach { (mark, quad) ->
                 emitQuad(
                     buffer.getBuffer(TracesRenderTypes.footprints), pose.last().pose(), quad,
-                    mark.alpha, mark.color, FULL_BRIGHT,
+                    TraceSightOverlayModel.scaledAlpha(mark.alpha, traceVisibility), mark.color, FULL_BRIGHT,
                 )
             }
             buffer.endBatch(TracesRenderTypes.footprints)
@@ -122,11 +127,14 @@ object TracesClientRenderer {
                 if (!visible(pos, camera, event, distance)) return@forEach
                 val quad = SurfaceAnchorResolver.annotationQuad(level, annotation) ?: return@forEach
                 drawable++
-                if (annotation.icon.isNotEmpty()) emitQuad(buffer.getBuffer(TracesRenderTypes.note(annotation.icon)), pose.last().pose(), quad, 1f, annotation.color)
+                if (annotation.icon.isNotEmpty()) emitQuad(
+                    buffer.getBuffer(TracesRenderTypes.note(annotation.icon)), pose.last().pose(), quad,
+                    traceVisibility, annotation.color,
+                )
                 val center = quad.vertices.fold(Vec3.ZERO) { sum, vertex -> sum.add(vertex.position) }
                     .scale(1.0 / quad.vertices.size)
                     .add(0.0, LABEL_HEIGHT, 0.0)
-                emitLabel(mc, buffer, pose, camera, center, annotation.text)
+                emitLabel(mc, buffer, pose, camera, center, annotation.text, traceVisibility)
                 if (!annotation.seen && player.distanceToSqr(
                         annotation.x + 0.5,
                         annotation.y + 0.5,
@@ -152,7 +160,7 @@ object TracesClientRenderer {
                 if (fade > 0f) {
                     DeathEchoRenderer.render(
                         echo.clip, center, playback, elapsedTicks / 20.0,
-                        pose, buffer, fade,
+                        pose, buffer, fade * traceVisibility,
                     )
                     drawable++
                     submitted++
@@ -160,9 +168,12 @@ object TracesClientRenderer {
             }
             noteEchoes.forEach { echo ->
                 val surface = SurfaceAnchorResolver.sample(level, echo.dto.x + 0.5, echo.dto.y + 1.0, echo.dto.z + 0.5) ?: return@forEach
-                val elapsed = ((System.currentTimeMillis() - echo.startedAt).coerceAtLeast(0L) / 1000.0).toFloat()
+                val elapsed = ((nowMillis - echo.startedAt).coerceAtLeast(0L) / 1000.0).toFloat()
                 if (elapsed <= echo.clip.durationSeconds) {
-                    DeathEchoRenderer.render(echo.clip, surface.position, elapsed, level.gameTime / 20.0, pose, buffer, 1f)
+                    DeathEchoRenderer.render(
+                        echo.clip, surface.position, elapsed, level.gameTime / 20.0,
+                        pose, buffer, traceVisibility,
+                    )
                     drawable++; submitted++
                 }
             }
@@ -185,6 +196,7 @@ object TracesClientRenderer {
         matrix: org.joml.Matrix4f,
         level: net.minecraft.world.level.Level,
         pool: com.bettercontent.playertraces.dto.VisibleBloodPoolDto,
+        alphaScale: Float,
     ) {
         val hash = pool.id.hashCode()
         val halfSize = 0.82 + ((hash ushr 8) and 15) / 100.0
@@ -202,7 +214,7 @@ object TracesClientRenderer {
         val light = LevelRenderer.getLightColor(level, BlockPos.containing(center))
         positions.zip(uv).forEach { (position, texture) ->
             consumer.vertex(matrix, position.x.toFloat(), position.y.toFloat(), position.z.toFloat())
-                .color(255, 255, 255, 235)
+                .color(255, 255, 255, TraceSightOverlayModel.alphaByte(235f / 255f, alphaScale))
                 .uv(texture.first, texture.second)
                 .overlayCoords(OverlayTexture.NO_OVERLAY)
                 .uv2(light)
@@ -238,7 +250,15 @@ object TracesClientRenderer {
         }
     }
 
-    private fun emitLabel(mc: Minecraft, buffer: MultiBufferSource.BufferSource, pose: com.mojang.blaze3d.vertex.PoseStack, camera: Camera, position: Vec3, text: String): Boolean {
+    private fun emitLabel(
+        mc: Minecraft,
+        buffer: MultiBufferSource.BufferSource,
+        pose: com.mojang.blaze3d.vertex.PoseStack,
+        camera: Camera,
+        position: Vec3,
+        text: String,
+        alphaScale: Float,
+    ): Boolean {
         val label = text.trim().take(32)
         if (label.isEmpty()) return false
         pose.pushPose()
@@ -248,7 +268,9 @@ object TracesClientRenderer {
         val component = Component.literal(label).withStyle(ChatFormatting.BOLD)
         mc.font.drawInBatch8xOutline(
             component.visualOrderText, -mc.font.width(component) / 2f, 0f,
-            LABEL_RGB, LABEL_OUTLINE_RGB, pose.last().pose(), buffer, 0x00F000F0,
+            TraceSightOverlayModel.argb(LABEL_RGB, 1f, alphaScale),
+            TraceSightOverlayModel.argb(LABEL_OUTLINE_RGB, 1f, alphaScale),
+            pose.last().pose(), buffer, 0x00F000F0,
         )
         pose.popPose()
         return true
@@ -299,6 +321,7 @@ object TracesClientRenderer {
         matrix: org.joml.Matrix4f,
         segment: GuidanceSegment,
         animationSeconds: Double,
+        alphaScale: Float,
     ) {
         val direction = segment.to.position.subtract(segment.from.position)
         if (!direction.lengthSqr().isFinite() || direction.lengthSqr() < 1.0e-8) return
@@ -308,8 +331,8 @@ object TracesClientRenderer {
         val up = right.cross(forward).normalize()
         val fromColor = guidanceColor(segment.startProgress, animationSeconds)
         val toColor = guidanceColor(segment.endProgress, animationSeconds)
-        val fromAlpha = guidanceAlpha(segment.startProgress, animationSeconds)
-        val toAlpha = guidanceAlpha(segment.endProgress, animationSeconds)
+        val fromAlpha = TraceSightOverlayModel.scaledAlpha(guidanceAlpha(segment.startProgress, animationSeconds), alphaScale)
+        val toAlpha = TraceSightOverlayModel.scaledAlpha(guidanceAlpha(segment.endProgress, animationSeconds), alphaScale)
         val ring = (0..GUIDANCE_CYLINDER_SIDES).map { side ->
             val angle = Math.PI * 2.0 * side / GUIDANCE_CYLINDER_SIDES
             right.scale(kotlin.math.cos(angle) * GUIDANCE_RADIUS)

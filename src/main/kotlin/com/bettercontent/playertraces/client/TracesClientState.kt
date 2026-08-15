@@ -97,8 +97,12 @@ object TracesClientState {
         TracesClientLog.LOGGER.info("TRACES_ANNOTATION_ECHO_CACHED annotation={} revision={} frames={}", packet.annotationId, packet.echoRevision, clip.frames.size)
     }
 
-    fun playingAnnotationEchoes(playerPosition: net.minecraft.world.phys.Vec3, nowMillis: Long): List<ClientAnnotationEcho> {
-        if (!overlayEnabled) {
+    fun playingAnnotationEchoes(
+        playerPosition: net.minecraft.world.phys.Vec3,
+        nowMillis: Long,
+        traceSightVisible: Boolean = overlayEnabled,
+    ): List<ClientAnnotationEcho> {
+        if (!traceSightVisible) {
             playbackSawOverlay = false
             activeAnnotationEchoes.clear()
             return emptyList()
@@ -108,12 +112,18 @@ object TracesClientState {
                 playerPosition.distanceToSqr(annotation.x + 0.5, annotation.y + 0.5, annotation.z + 0.5) <=
                 AnnotationEchoPlayback.MAX_DISTANCE * AnnotationEchoPlayback.MAX_DISTANCE
         }
-        playbackSawOverlay = true
-        annotationPlayback.onSightOpened(eligible.map { it.id }, nowMillis)
         activeAnnotationEchoes.entries.removeIf { (id, active) ->
             val annotation = eligible.firstOrNull { it.id == id }
             annotation == null || nowMillis - active.startedAt > (active.clip.durationSeconds * 1000).toLong()
         }
+        if (!overlayEnabled) {
+            playbackSawOverlay = false
+            return activeAnnotationEchoes.mapNotNull { (id, active) ->
+                eligible.firstOrNull { it.id == id }?.let { ClientAnnotationEcho(it, active.clip, active.startedAt) }
+            }
+        }
+        playbackSawOverlay = true
+        annotationPlayback.onSightOpened(eligible.map { it.id }, nowMillis)
         eligible.forEach { annotation ->
             val distance = playerPosition.distanceToSqr(annotation.x + 0.5, annotation.y + 0.5, annotation.z + 0.5)
             val inside = distance <= AnnotationEchoPlayback.APPROACH_RADIUS * AnnotationEchoPlayback.APPROACH_RADIUS

@@ -140,6 +140,9 @@ class TraceCoreTest {
         assertEquals(15, TraceSightOverlayModel.alphaByte(TraceSightOverlayModel.CENTER_DIM_ALPHA, 1f))
         assertEquals(82, TraceSightOverlayModel.alphaByte(TraceSightOverlayModel.VIGNETTE_OUTER_ALPHA, 1f))
         assertEquals(71, TraceSightOverlayModel.alphaByte(TraceSightOverlayModel.CYAN_KEYLINE_ALPHA, 1f))
+        assertEquals(0.25f, TraceSightOverlayModel.scaledAlpha(0.5f, 0.5f), 0.0001f)
+        assertEquals(0f, TraceSightOverlayModel.scaledAlpha(0.5f, 0f), 0.0001f)
+        assertEquals(0.5f, TraceSightOverlayModel.scaledAlpha(0.5f, 1f), 0.0001f)
     }
     @Test
     fun geometryUses16x16RegionBuckets() {

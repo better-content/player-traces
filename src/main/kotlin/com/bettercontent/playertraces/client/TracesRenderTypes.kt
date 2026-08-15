@@ -10,7 +10,7 @@ object TracesRenderTypes {
 
     val footprints: RenderType = RenderType.entityTranslucent(footprintTexture)
     private val noteTypes = com.bettercontent.playertraces.domain.AnnotationComponents.icons.associateWith { icon ->
-        RenderType.entityCutoutNoCullZOffset(ResourceLocation.fromNamespaceAndPath("player_traces", "textures/effect/icon_$icon.png"))
+        RenderType.entityTranslucent(ResourceLocation.fromNamespaceAndPath("player_traces", "textures/effect/icon_$icon.png"))
     }
     fun note(icon: String): RenderType = noteTypes[icon] ?: noteTypes.getValue("pin")
     val guidance: RenderType = RenderType.entityTranslucent(whiteTexture)

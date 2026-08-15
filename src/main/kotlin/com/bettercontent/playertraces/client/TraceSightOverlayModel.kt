@@ -54,7 +54,10 @@ object TraceSightOverlayModel {
     }
 
     fun alphaByte(maxAlpha: Float, visibility: Float): Int =
-        (maxAlpha.coerceIn(0f, 1f) * visibility.coerceIn(0f, 1f) * 255f).roundToInt().coerceIn(0, 255)
+        (scaledAlpha(maxAlpha, visibility) * 255f).roundToInt().coerceIn(0, 255)
+
+    fun scaledAlpha(alpha: Float, visibility: Float): Float =
+        alpha.coerceIn(0f, 1f) * visibility.coerceIn(0f, 1f)
 
     fun argb(rgb: Int, maxAlpha: Float, visibility: Float): Int =
         (alphaByte(maxAlpha, visibility) shl 24) or (rgb and 0xFFFFFF)

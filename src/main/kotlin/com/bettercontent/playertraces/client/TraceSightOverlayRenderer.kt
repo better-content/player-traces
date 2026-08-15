@@ -20,12 +20,17 @@ object TraceSightOverlayRenderer {
         }
     }
 
-    fun render(graphics: GuiGraphics, screenWidth: Int, screenHeight: Int, nowMillis: Long = Util.getMillis()) {
+    fun visibility(nowMillis: Long = Util.getMillis()): Float {
         val mc = Minecraft.getInstance()
         val active = TracesClientState.overlayEnabled && mc.level != null && mc.player != null && mc.screen == null
         updateTarget(active, nowMillis)
+        return animation.valueAt(nowMillis)
+    }
+
+    fun render(graphics: GuiGraphics, screenWidth: Int, screenHeight: Int, nowMillis: Long = Util.getMillis()) {
+        val mc = Minecraft.getInstance()
         if (mc.screen != null || screenWidth <= 0 || screenHeight <= 0) return
-        val visibility = animation.valueAt(nowMillis)
+        val visibility = visibility(nowMillis)
         if (visibility <= 0.001f) return
 
         RenderSystem.enableBlend()
