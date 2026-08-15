@@ -144,6 +144,18 @@ class TraceCoreTest {
         assertEquals(0f, TraceSightOverlayModel.scaledAlpha(0.5f, 0f), 0.0001f)
         assertEquals(0.5f, TraceSightOverlayModel.scaledAlpha(0.5f, 1f), 0.0001f)
     }
+
+    @Test
+    fun traceSightHidesOnlyNonVanillaHudOverlays() {
+        val vanilla = ResourceLocation.fromNamespaceAndPath("minecraft", "hotbar")
+        val foreign = ResourceLocation.fromNamespaceAndPath("example_mod", "status")
+        assertFalse(TraceSightOverlayModel.shouldHideHudOverlay(vanilla, true, 1f))
+        assertFalse(TraceSightOverlayModel.shouldHideHudOverlay(TraceSightOverlayModel.TRACE_SIGHT_OVERLAY_ID, true, 1f))
+        assertTrue(TraceSightOverlayModel.shouldHideHudOverlay(foreign, true, 0f))
+        assertTrue(TraceSightOverlayModel.shouldHideHudOverlay(foreign, false, 0.25f))
+        assertFalse(TraceSightOverlayModel.shouldHideHudOverlay(foreign, false, 0f))
+    }
+
     @Test
     fun geometryUses16x16RegionBuckets() {
         val (sx, sz) = Geometry.worldToShard(BlockPos(255, 64, 255))

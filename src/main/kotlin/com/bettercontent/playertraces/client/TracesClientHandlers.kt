@@ -7,6 +7,7 @@ import net.minecraft.network.chat.Component
 import net.minecraftforge.api.distmarker.Dist
 import net.minecraftforge.client.event.InputEvent
 import net.minecraftforge.client.event.RegisterGuiOverlaysEvent
+import net.minecraftforge.client.event.RenderGuiOverlayEvent
 import net.minecraftforge.client.event.RegisterKeyMappingsEvent
 import net.minecraftforge.client.event.RenderLevelStageEvent
 import net.minecraftforge.event.TickEvent
@@ -42,6 +43,19 @@ object TracesClientHandlers {
     @JvmStatic
     fun onRenderLevelStage(event: RenderLevelStageEvent) {
         TracesClientRenderer.onRenderLevelStage(event)
+    }
+
+    @SubscribeEvent
+    @JvmStatic
+    fun onRenderGuiOverlay(event: RenderGuiOverlayEvent.Pre) {
+        if (TraceSightOverlayModel.shouldHideHudOverlay(
+                event.overlay.id(),
+                TracesClientState.overlayEnabled,
+                TraceSightOverlayRenderer.visibility(),
+            )
+        ) {
+            event.isCanceled = true
+        }
     }
 
     @SubscribeEvent
