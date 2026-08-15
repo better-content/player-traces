@@ -23,6 +23,18 @@ import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
+internal const val ECHO_BODY_SCALE = 1.25
+
+internal fun echoWorldVertex(local: Vec3, root: EchoRoot, anchor: Vec3): Vec3 {
+    val scaledX = local.x * ECHO_BODY_SCALE
+    val scaledY = local.y * ECHO_BODY_SCALE
+    val scaledZ = local.z * ECHO_BODY_SCALE
+    val yaw = root.bodyYaw.toDouble()
+    val rotatedX = scaledX * cos(yaw) - scaledZ * sin(yaw)
+    val rotatedZ = scaledX * sin(yaw) + scaledZ * cos(yaw)
+    return anchor.add(root.x + rotatedX, root.y + scaledY, root.z + rotatedZ)
+}
+
 object DeathEchoRenderer {
     private val whiteTexture = ResourceLocation("forge", "textures/white.png")
     private val renderType = RenderType.entityTranslucentEmissive(whiteTexture)
@@ -111,13 +123,11 @@ object DeathEchoRenderer {
 
     private fun transformedVertex(vertices: FloatArray, index: Int, root: EchoRoot, anchor: Vec3): Vec3 {
         val offset = index * 3
-        val localX = vertices[offset].toDouble()
-        val localY = vertices[offset + 1].toDouble()
-        val localZ = vertices[offset + 2].toDouble()
-        val yaw = root.bodyYaw.toDouble()
-        val rotatedX = localX * cos(yaw) - localZ * sin(yaw)
-        val rotatedZ = localX * sin(yaw) + localZ * cos(yaw)
-        return anchor.add(root.x + rotatedX, root.y + localY, root.z + rotatedZ)
+        return echoWorldVertex(
+            Vec3(vertices[offset].toDouble(), vertices[offset + 1].toDouble(), vertices[offset + 2].toDouble()),
+            root,
+            anchor,
+        )
     }
 
     private fun emitGradientPrism(
@@ -222,8 +232,8 @@ object DeathEchoRenderer {
 
     private const val THREAD_SIDES = 4
     private const val OPACITY_SPANS = 6
-    private const val CORE_RADIUS = 0.0075
-    private const val HALO_RADIUS = 0.018
+    private const val CORE_RADIUS = 0.0075 * ECHO_BODY_SCALE
+    private const val HALO_RADIUS = 0.018 * ECHO_BODY_SCALE
     private const val CORE_RGB = 0xA8F8FF
     private const val HALO_RGB = 0x21DFF7
     private const val FULL_BRIGHT = 0x00F000F0

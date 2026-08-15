@@ -1,6 +1,8 @@
 package com.bettercontent.playertraces
 
 import com.bettercontent.playertraces.client.death.deathEchoThreadOpacity
+import com.bettercontent.playertraces.client.death.ECHO_BODY_SCALE
+import com.bettercontent.playertraces.client.death.echoWorldVertex
 import com.bettercontent.playertraces.domain.BloodPoolRecord
 import com.bettercontent.playertraces.domain.DeathEchoRecord
 import com.bettercontent.playertraces.dto.VisibleBloodPoolDto
@@ -17,6 +19,7 @@ import com.bettercontent.playertraces.storage.DeathTraceSavedData
 import io.netty.buffer.Unpooled
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.network.FriendlyByteBuf
+import net.minecraft.world.phys.Vec3
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -24,6 +27,18 @@ import org.junit.jupiter.api.Test
 import java.util.UUID
 
 class DeathTraceTest {
+    @Test
+    fun `ghost body is enlarged without scaling recorded movement`() {
+        val root = EchoRoot(2f, 3f, 4f, 0f, 0f)
+        val anchor = Vec3(10.0, 20.0, 30.0)
+
+        val world = echoWorldVertex(Vec3(0.4, 1.0, -0.2), root, anchor)
+
+        assertEquals(12.0 + 0.4 * ECHO_BODY_SCALE, world.x, 0.0001)
+        assertEquals(23.0 + ECHO_BODY_SCALE, world.y, 0.0001)
+        assertEquals(34.0 - 0.2 * ECHO_BODY_SCALE, world.z, 0.0001)
+    }
+
     @Test
     fun `death echo wires span full opacity while averaging near thirty percent`() {
         val samples = (0 until 144).flatMap { edge ->
