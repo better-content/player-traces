@@ -174,6 +174,12 @@ class TraceCoreTest {
     }
 
     @Test
+    fun revealedFootprintsRefreshContinuouslyWhileWalking() {
+        assertEquals(5, com.bettercontent.playertraces.client.TracesClientHandlers.queryIntervalTicks(true))
+        assertEquals(100, com.bettercontent.playertraces.client.TracesClientHandlers.queryIntervalTicks(false))
+    }
+
+    @Test
     fun ownMarksArePrioritizedAndKeepStrongOpacity() {
         val traces = listOf(
             VisibleTraceDto("other", "route", MovementClass.WALK, 0, 64, 0, 1f, 0, false),

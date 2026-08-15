@@ -34,6 +34,8 @@ object TracesClientKeyBindings {
 
 @Mod.EventBusSubscriber(value = [Dist.CLIENT], bus = Mod.EventBusSubscriber.Bus.FORGE)
 object TracesClientHandlers {
+    internal const val REVEAL_QUERY_INTERVAL_TICKS = 5
+    internal const val HIDDEN_QUERY_INTERVAL_TICKS = 100
     private var cooldown = 0
 
     @SubscribeEvent
@@ -99,6 +101,9 @@ object TracesClientHandlers {
             )
         }
         TracesNetwork.requestNearby(TracesConfig.client.maxRenderDistance.get())
-        cooldown = if (TracesClientState.overlayEnabled) 20 else 100
+        cooldown = queryIntervalTicks(TracesClientState.overlayEnabled)
     }
+
+    internal fun queryIntervalTicks(overlayEnabled: Boolean): Int =
+        if (overlayEnabled) REVEAL_QUERY_INTERVAL_TICKS else HIDDEN_QUERY_INTERVAL_TICKS
 }
