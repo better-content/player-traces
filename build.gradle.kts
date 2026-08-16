@@ -239,7 +239,6 @@ tasks {
                 referenceDensity = 8.0
                 minVisibleAlpha = 0.07
                 maxRenderDistance = 6
-                maxRenderedMarks = 220
                 guidancePulseSpeed = 0.08
                 annotationLabelDistance = 32
                 visualDiagnostics = true
@@ -254,7 +253,7 @@ tasks {
                 maxRenderDistance = 6
                 rainExposureFactor = 0.91
                 devVisualFixture = true
-                maxPayloadTraces = 512
+                maxPayloadTraces = 4096
             """.trimIndent() + "\n")
         }
     }

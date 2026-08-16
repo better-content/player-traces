@@ -41,9 +41,15 @@ object TracesClientState {
     @Volatile
     var hasResponse: Boolean = false
 
+    @Volatile
+    var footprintPayloadRevision: Long = 0
+
     fun acceptNetworkPayload(payload: com.bettercontent.playertraces.network.TraceQueryResponsePacket) {
-        traces.clear()
-        traces.addAll(payload.traces)
+        if (traces != payload.traces) {
+            traces.clear()
+            traces.addAll(payload.traces)
+            footprintPayloadRevision++
+        }
         annotations.clear()
         annotations.addAll(payload.annotations)
         val advertised = annotations.filter { it.hasEcho }.mapTo(HashSet()) { it.id to it.echoRevision }

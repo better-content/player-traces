@@ -19,6 +19,7 @@ import com.bettercontent.playertraces.client.death.DeathEchoRenderer
 import net.minecraft.client.renderer.LevelRenderer
 
 object TracesClientRenderer {
+    internal const val MAX_RENDERED_FOOTPRINTS = 1_000_000_000
     private var visualStageObserved = false
     private const val NOTE_RGB = 0xFFFFFF
     private const val LABEL_RGB = 0xFFFFFF
@@ -68,8 +69,8 @@ object TracesClientRenderer {
             TracesClientState.playingAnnotationEchoes(player.position(), nowMillis, traceSightVisible = false)
             return
         }
-        val marks = TraceVisualModel.marks(
-            TracesClientState.visibleTraces(), 1f, 0f, TracesConfig.client.maxRenderedMarks.get(),
+        val footprintData = FootprintRenderCache.renderData(
+            level, TracesClientState.visibleTraces(), TracesClientState.footprintPayloadRevision,
         )
         val annotations = TracesClientState.visibleAnnotations()
             .sortedBy { player.distanceToSqr(it.x + 0.5, it.y + 0.5, it.z + 0.5) }
@@ -78,7 +79,7 @@ object TracesClientRenderer {
         val bloodPools = TracesClientState.visibleBloodPools()
         val deathEchoes = TracesClientState.visibleDeathEchoes()
         val noteEchoes = TracesClientState.playingAnnotationEchoes(player.position(), nowMillis, traceSightVisible = true)
-        if (marks.isEmpty() && annotations.isEmpty() && guidance.isEmpty() && bloodPools.isEmpty() && deathEchoes.isEmpty() && noteEchoes.isEmpty()) return
+        if (footprintData.sparse.isEmpty() && footprintData.dense.isEmpty() && annotations.isEmpty() && guidance.isEmpty() && bloodPools.isEmpty() && deathEchoes.isEmpty() && noteEchoes.isEmpty()) return
 
         val pose = event.poseStack
         pose.pushPose()
@@ -105,23 +106,26 @@ object TracesClientRenderer {
             guidanceSegments.values.forEach { segment ->
                 emitGuidanceSegment(guidanceConsumer, pose.last().pose(), segment, animationSeconds, traceVisibility)
             }
-            val drawableFootprints = marks.mapNotNull { mark ->
-                val pos = BlockPos.containing(mark.trace.x, mark.trace.y, mark.trace.z)
-                if (!visible(pos, camera, event, distance)) return@mapNotNull null
-                val quad = SurfaceAnchorResolver.footprintQuad(
-                    level, mark.trace, mark.angle, mark.lateralOffset, mark.longitudinalOffset,
-                ) ?: return@mapNotNull null
+            val drawableFootprints = footprintData.sparse.mapNotNull { cached ->
+                if (camera.position.distanceToSqr(cached.bounds.center) > distance * distance || !event.frustum.isVisible(cached.bounds)) return@mapNotNull null
                 drawable++
                 submitted++
-                mark to quad
+                cached
             }
-            drawableFootprints.forEach { (mark, quad) ->
+            drawableFootprints.forEach { cached ->
                 emitQuad(
-                    buffer.getBuffer(TracesRenderTypes.footprints), pose.last().pose(), quad,
-                    TraceSightOverlayModel.scaledAlpha(mark.alpha, traceVisibility), mark.color, FULL_BRIGHT,
+                    buffer.getBuffer(TracesRenderTypes.footprints), pose.last().pose(), cached.quad,
+                    TraceSightOverlayModel.scaledAlpha(cached.mark.alpha, traceVisibility), cached.mark.color, FULL_BRIGHT,
                 )
             }
             buffer.endBatch(TracesRenderTypes.footprints)
+            footprintData.dense.forEach { decal ->
+                if (camera.position.distanceToSqr(decal.bounds.center) > distance * distance || !event.frustum.isVisible(decal.bounds)) return@forEach
+                emitQuad(buffer.getBuffer(decal.renderType), pose.last().pose(), decal.quad, 0.50f * traceVisibility, 0x35E7FF, FULL_BRIGHT)
+                drawable += decal.sourceCount
+                submitted++
+            }
+            footprintData.dense.map { it.renderType }.distinct().forEach(buffer::endBatch)
             annotations.forEach { annotation ->
                 val pos = BlockPos(annotation.x, annotation.y, annotation.z)
                 if (!visible(pos, camera, event, distance)) return@forEach
@@ -183,7 +187,7 @@ object TracesClientRenderer {
                 TracesClientLog.LOGGER.info(
                     "TRACES_MVP_RENDER accepted={} drawable={} submitted={} footprints={} notes={} noteEchoes={} guidanceSegments={}",
                     TracesClientState.lastPayloadTraceCount + TracesClientState.lastPayloadAnnotationCount,
-                    drawable, submitted, marks.size, annotations.size, noteEchoes.size, guidanceSegments.size,
+                    drawable, submitted, footprintData.sourceCount, annotations.size, noteEchoes.size, guidanceSegments.size,
                 )
             }
         } finally {

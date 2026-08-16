@@ -21,6 +21,7 @@ import com.bettercontent.playertraces.client.TraceVisualModel
 import com.bettercontent.playertraces.client.TraceSightOverlayModel
 import com.bettercontent.playertraces.client.TraceSightOverlayTransition
 import com.bettercontent.playertraces.client.OpeningKeyInputGuard
+import com.bettercontent.playertraces.client.FootprintRenderCache
 import com.bettercontent.playertraces.network.TraceQueryResponsePacket
 import com.bettercontent.playertraces.network.TraceAnnotationsSeenPacket
 import net.minecraft.core.BlockPos
@@ -43,6 +44,7 @@ import com.bettercontent.playertraces.config.TracesConfig
 import com.bettercontent.playertraces.storage.TraceStorageManager
 import net.minecraft.resources.ResourceLocation
 import net.minecraft.world.phys.Vec3
+import net.minecraft.world.phys.AABB
 
 class TraceCoreTest {
     private val guidanceViewer: UUID = UUID.nameUUIDFromBytes("guidance-viewer".toByteArray())
@@ -85,6 +87,9 @@ class TraceCoreTest {
 
     @Test
     fun rendererGeometryContractUsesFiniteQuads() {
+        assertEquals(1_000_000_000, TracesClientRenderer.MAX_RENDERED_FOOTPRINTS)
+        assertEquals(16, FootprintRenderCache.MERGE_THRESHOLD)
+        assertEquals(64, FootprintRenderCache.PIXELS_PER_BLOCK)
         assertTrue(TraceVisualModel.validPrimitiveCount(TraceVisualModel.PIN_VERTEX_COUNT, TraceVisualModel.FOOTPRINT_VERTICES_PER_PRIMITIVE))
         assertTrue(TraceVisualModel.validPrimitiveCount(220 * TraceVisualModel.GUIDANCE_VERTICES_PER_PRIMITIVE, TraceVisualModel.GUIDANCE_VERTICES_PER_PRIMITIVE))
         assertTrue(!TraceVisualModel.validPrimitiveCount(47, TraceVisualModel.FOOTPRINT_VERTICES_PER_PRIMITIVE))
@@ -104,6 +109,24 @@ class TraceCoreTest {
         val arrival = 0.10 / 0.22
         assertEquals(0.50f, TracesClientRenderer.guidanceAlpha(0.10f, 0.0), 0.0001f)
         assertEquals(0.90f, TracesClientRenderer.guidanceAlpha(0.10f, arrival), 0.0001f)
+    }
+
+    @Test
+    fun denseFootprintGroupsConnectTransitivelyWithoutJoiningGaps() {
+        val groups = FootprintRenderCache.connectedIndexGroups(listOf(
+            AABB(0.0, 0.0, 0.0, 1.0, 0.1, 1.0),
+            AABB(0.9, 0.0, 0.0, 1.9, 0.1, 1.0),
+            AABB(1.8, 0.0, 0.0, 2.8, 0.1, 1.0),
+            AABB(5.0, 0.0, 5.0, 6.0, 0.1, 6.0),
+        ))
+        assertEquals(listOf(listOf(0, 1, 2), listOf(3)), groups)
+    }
+
+    @Test
+    fun denseFootprintMasksUseOrderIndependentMaximumAlpha() {
+        assertEquals(220, FootprintRenderCache.composeAlpha(80, 220))
+        assertEquals(220, FootprintRenderCache.composeAlpha(220, 80))
+        assertEquals(255, FootprintRenderCache.composeAlpha(300, -1))
     }
 
     @Test

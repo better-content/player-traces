@@ -11,6 +11,7 @@ import net.minecraftforge.client.event.RenderGuiOverlayEvent
 import net.minecraftforge.client.event.RegisterKeyMappingsEvent
 import net.minecraftforge.client.event.RenderLevelStageEvent
 import net.minecraftforge.event.TickEvent
+import net.minecraftforge.client.event.ClientPlayerNetworkEvent
 import net.minecraftforge.eventbus.api.SubscribeEvent
 import net.minecraftforge.fml.common.Mod
 
@@ -117,6 +118,12 @@ object TracesClientHandlers {
         }
         TracesNetwork.requestNearby(TracesConfig.client.maxRenderDistance.get())
         cooldown = queryIntervalTicks(TracesClientState.overlayEnabled)
+    }
+
+    @SubscribeEvent
+    @JvmStatic
+    fun onLogout(_event: ClientPlayerNetworkEvent.LoggingOut) {
+        FootprintRenderCache.clear()
     }
 
     internal fun queryIntervalTicks(overlayEnabled: Boolean): Int =
