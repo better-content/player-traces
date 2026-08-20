@@ -54,13 +54,6 @@ object TraceSightOverlayRenderer {
                 graphics.fill(start, 0, end, screenHeight, color)
                 graphics.fill(screenWidth - end, 0, screenWidth - start, screenHeight, color)
             }
-            val cyan = TraceSightOverlayModel.argb(
-                TraceSightOverlayModel.KEYLINE_RGB, TraceSightOverlayModel.CYAN_KEYLINE_ALPHA, visibility,
-            )
-            graphics.fill(0, 0, screenWidth, 1, cyan)
-            graphics.fill(0, screenHeight - 1, screenWidth, screenHeight, cyan)
-            graphics.fill(0, 0, 1, screenHeight, cyan)
-            graphics.fill(screenWidth - 1, 0, screenWidth, screenHeight, cyan)
         } finally {
             RenderSystem.disableBlend()
         }

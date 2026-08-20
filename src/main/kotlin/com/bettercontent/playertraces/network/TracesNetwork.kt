@@ -3,7 +3,6 @@ package com.bettercontent.playertraces.network
 import com.bettercontent.playertraces.TracesMod
 import com.bettercontent.playertraces.config.TracesConfig
 import com.bettercontent.playertraces.domain.GLOBAL_TEAM
-import com.bettercontent.playertraces.logic.TraceQueryService
 import net.minecraft.resources.ResourceLocation
 import net.minecraftforge.network.NetworkEvent
 import net.minecraftforge.network.NetworkRegistry
@@ -13,11 +12,18 @@ import net.minecraftforge.api.distmarker.Dist
 import net.minecraftforge.fml.DistExecutor
 import java.util.function.Supplier
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import com.mojang.logging.LogUtils
 
 object TracesNetwork {
     private val logger = LogUtils.getLogger()
-    private const val PROTOCOL = "player_traces_v6"
+    private const val PROTOCOL = "player_traces_v7"
+    private const val MAX_TILE_SNAPSHOTS_PER_POLL = 64
+    private const val TILE_PAGE_SIZE = 1024
+    private val nextSubscriptionGeneration = AtomicLong(1L)
+    private val subscriptions = ConcurrentHashMap<UUID, ServerTraceSubscription>()
+    private val loginGameTimes = ConcurrentHashMap<UUID, Long>()
     private val channel: SimpleChannel = NetworkRegistry.newSimpleChannel(
         ResourceLocation.fromNamespaceAndPath("player_traces", "main"),
         { PROTOCOL },
@@ -43,19 +49,22 @@ object TracesNetwork {
         channel.registerMessage(8, AnnotationMutationResultPacket::class.java, AnnotationMutationResultPacket::encode, AnnotationMutationResultPacket.Companion::decode) { msg, context -> onMutationResult(msg, context) }
         channel.registerMessage(9, AnnotationEchoRequestPacket::class.java, AnnotationEchoRequestPacket::encode, AnnotationEchoRequestPacket.Companion::decode) { msg, context -> onAnnotationEchoRequest(msg, context) }
         channel.registerMessage(10, AnnotationEchoResponsePacket::class.java, AnnotationEchoResponsePacket::encode, AnnotationEchoResponsePacket.Companion::decode) { msg, context -> onAnnotationEchoResponse(msg, context) }
+        channel.registerMessage(11, TraceTileSnapshotPacket::class.java, TraceTileSnapshotPacket::encode, TraceTileSnapshotPacket.Companion::decode) { msg, context -> onTraceTileSnapshot(msg, context) }
+        channel.registerMessage(12, TraceTileEvictPacket::class.java, TraceTileEvictPacket::encode, TraceTileEvictPacket.Companion::decode) { msg, context -> onTraceTileEvict(msg, context) }
+        channel.registerMessage(13, DownedCaptureFreezePacket::class.java, DownedCaptureFreezePacket::encode, DownedCaptureFreezePacket.Companion::decode) { msg, context -> onDownedCaptureFreeze(msg, context) }
+        channel.registerMessage(14, DownedCaptureDiscardPacket::class.java, DownedCaptureDiscardPacket::encode, DownedCaptureDiscardPacket.Companion::decode) { msg, context -> onDownedCaptureDiscard(msg, context) }
     }
 
     private fun onRequest(msg: TraceQueryRequestPacket, ctx: Supplier<NetworkEvent.Context>) {
         val context = ctx.get()
         val sender = context.sender ?: return
         context.enqueueWork {
-            val radius = msg.radius.coerceIn(2, 16)
+            val radius = msg.radius.coerceIn(2, TracesConfig.common.maxRenderDistance.get())
             val level = sender.serverLevel()
             val pos = sender.blockPosition()
             val blockRadius = radius * 16
             val min = net.minecraft.core.BlockPos(pos.x - blockRadius, level.minBuildHeight, pos.z - blockRadius)
             val max = net.minecraft.core.BlockPos(pos.x + blockRadius, level.maxBuildHeight - 1, pos.z + blockRadius)
-            val result = TraceQueryService().tracesWithin(level, min, max)
             val runtime = TracesMod.getRuntime(level.server)
             val storage = runtime.storage(level)
             val guidance = runtime.guidance(level).query(sender)
@@ -77,7 +86,7 @@ object TracesNetwork {
                 }
                 .take(TracesConfig.common.maxPayloadDeathEchoes.get())
                 .map { com.bettercontent.playertraces.dto.VisibleDeathEchoDto(it.id.toString(), it.ownerName, it.x, it.y, it.z, it.createdAt, it.encodedClip) }
-            val visibleAnnotations = result.annotations
+            val visibleAnnotations = storage.queryAnnotations(min, max)
                 .filter { annotation -> annotation.team == GLOBAL_TEAM }
                 .sortedWith(
                     compareByDescending<com.bettercontent.playertraces.domain.TraceAnnotation> { it.id.toString() in guidanceTargets }
@@ -101,28 +110,19 @@ object TracesNetwork {
                         echoRevision = echo?.takeIf { echo -> echo.annotationRevision == it.revision }?.annotationRevision ?: 0,
                     )
                 }
+            val dimension = level.dimension().location().toString()
+            val subscription = subscription(sender, dimension, radius, level.gameTime)
             val response = TraceQueryResponsePacket(
-                traces = result.traces
-                    .sortedWith(compareByDescending<com.bettercontent.playertraces.domain.FootTrace> { it.sourcePlayerInternal == sender.uuid }.thenBy {
-                        val dx = it.blockPos.x - pos.x
-                        val dz = it.blockPos.z - pos.z
-                        dx * dx + dz * dz
-                    }.thenBy { it.id })
-                    .take(TracesConfig.common.maxPayloadTraces.get())
-                    .map {
-                        com.bettercontent.playertraces.dto.VisibleTraceDto(
-                            id = it.id.toString(), sequenceId = it.sequenceId.toString(), movementClass = it.movementClass,
-                            x = it.x, y = it.y, z = it.z, facingYaw = it.facingYaw, strength = it.strength,
-                            sequenceIndex = it.sequenceIndex,
-                            own = it.sourcePlayerInternal == sender.uuid,
-                        )
-                    },
+                traces = emptyList(),
                 annotations = visibleAnnotations,
                 guidanceRoutes = guidance.routes,
                 guidanceTotal = guidance.totalReachable,
                 guidanceTruncated = guidance.truncated,
                 bloodPools = bloodPools,
                 deathEchoes = deathEchoes,
+                subscriptionGeneration = subscription.generation,
+                dimension = dimension,
+                loginGameTime = subscription.loginGameTime,
             )
             if (java.lang.Boolean.getBoolean("traces.visualValidation")) {
                 logger.debug(
@@ -132,6 +132,7 @@ object TracesNetwork {
                 )
             }
             channel.send(PacketDistributor.PLAYER.with { sender }, response)
+            streamTraceTiles(sender, level, storage, subscription)
         }
         context.packetHandled = true
     }
@@ -143,6 +144,38 @@ object TracesNetwork {
             DistExecutor.unsafeRunWhenOn(Dist.CLIENT) {
                 Runnable { com.bettercontent.playertraces.client.TracesClientNetworkHandler.accept(msg) }
             }
+        }
+        context.packetHandled = true
+    }
+
+    private fun onTraceTileSnapshot(msg: TraceTileSnapshotPacket, ctx: Supplier<NetworkEvent.Context>) {
+        val context = ctx.get()
+        context.enqueueWork {
+            DistExecutor.unsafeRunWhenOn(Dist.CLIENT) { Runnable {
+                com.bettercontent.playertraces.client.TracesClientState.acceptTraceTilePage(
+                    msg.generation,
+                    msg.dimension,
+                    com.bettercontent.playertraces.client.TraceTileKey(msg.chunkX, msg.chunkZ),
+                    msg.revision,
+                    msg.pageIndex,
+                    msg.pageCount,
+                    msg.traces,
+                )
+            } }
+        }
+        context.packetHandled = true
+    }
+
+    private fun onTraceTileEvict(msg: TraceTileEvictPacket, ctx: Supplier<NetworkEvent.Context>) {
+        val context = ctx.get()
+        context.enqueueWork {
+            DistExecutor.unsafeRunWhenOn(Dist.CLIENT) { Runnable {
+                com.bettercontent.playertraces.client.TracesClientState.evictTraceTiles(
+                    msg.generation,
+                    msg.dimension,
+                    msg.tiles.map { com.bettercontent.playertraces.client.TraceTileKey(it.chunkX, it.chunkZ) },
+                )
+            } }
         }
         context.packetHandled = true
     }
@@ -164,9 +197,27 @@ object TracesNetwork {
         val context = ctx.get()
         context.enqueueWork {
             DistExecutor.unsafeRunWhenOn(Dist.CLIENT) {
-                Runnable { com.bettercontent.playertraces.client.death.DeathEchoRecorder.onDeathConfirmed(msg) }
+                Runnable { com.bettercontent.playertraces.client.death.DeathEchoRecorder.onDeathConfirmed(msg, msg.captureToken) }
             }
         }
+        context.packetHandled = true
+    }
+
+    private fun onDownedCaptureFreeze(msg: DownedCaptureFreezePacket, ctx: Supplier<NetworkEvent.Context>) {
+        val context = ctx.get()
+        context.enqueueWork { DistExecutor.unsafeRunWhenOn(Dist.CLIENT) { Runnable {
+            com.bettercontent.playertraces.client.death.DeathEchoRecorder.freezeForDowned(
+                msg.token, msg.dimension, msg.x, msg.y, msg.z, msg.downGameTime,
+            )
+        } } }
+        context.packetHandled = true
+    }
+
+    private fun onDownedCaptureDiscard(msg: DownedCaptureDiscardPacket, ctx: Supplier<NetworkEvent.Context>) {
+        val context = ctx.get()
+        context.enqueueWork { DistExecutor.unsafeRunWhenOn(Dist.CLIENT) { Runnable {
+            com.bettercontent.playertraces.client.death.DeathEchoRecorder.discardDownedCapture(msg.token)
+        } } }
         context.packetHandled = true
     }
 
@@ -295,7 +346,17 @@ object TracesNetwork {
     }
 
     fun requestNearby(radius: Int) {
-        channel.sendToServer(TraceQueryRequestPacket(radius.coerceIn(2, 16)))
+        channel.sendToServer(TraceQueryRequestPacket(radius.coerceIn(2, 32)))
+    }
+
+    fun onPlayerLogin(player: net.minecraft.server.level.ServerPlayer) {
+        loginGameTimes[player.uuid] = player.serverLevel().gameTime
+        subscriptions.remove(player.uuid)
+    }
+
+    fun onPlayerLogout(player: net.minecraft.server.level.ServerPlayer) {
+        loginGameTimes.remove(player.uuid)
+        subscriptions.remove(player.uuid)
     }
 
     fun acknowledgeAnnotations(annotations: List<com.bettercontent.playertraces.dto.VisibleAnnotationDto>) {
@@ -311,6 +372,128 @@ object TracesNetwork {
     fun deleteAnnotation(id: String, expectedRevision: Int) = channel.sendToServer(AnnotationDeletePacket(id, expectedRevision))
     fun requestDeathEcho(player: net.minecraft.server.level.ServerPlayer, packet: DeathCaptureRequestPacket) =
         channel.send(PacketDistributor.PLAYER.with { player }, packet)
+    fun freezeDeathEcho(
+        player: net.minecraft.server.level.ServerPlayer,
+        token: UUID,
+        dimension: String,
+        position: net.minecraft.world.phys.Vec3,
+        downGameTime: Long,
+    ) = channel.send(
+        PacketDistributor.PLAYER.with { player },
+        DownedCaptureFreezePacket(token, dimension, position.x, position.y, position.z, downGameTime),
+    )
+    fun discardDeathEcho(player: net.minecraft.server.level.ServerPlayer, token: UUID) =
+        channel.send(PacketDistributor.PLAYER.with { player }, DownedCaptureDiscardPacket(token))
     fun submitDeathEcho(packet: DeathEchoSubmitPacket) = channel.sendToServer(packet)
     fun requestAnnotationEcho(id: String, revision: Int) = channel.sendToServer(AnnotationEchoRequestPacket(id, revision))
+
+    private fun subscription(
+        player: net.minecraft.server.level.ServerPlayer,
+        dimension: String,
+        radius: Int,
+        now: Long,
+    ): ServerTraceSubscription {
+        val current = subscriptions[player.uuid]
+        if (current != null && current.dimension == dimension && current.radius == radius) return current
+        return ServerTraceSubscription(
+            dimension = dimension,
+            radius = radius,
+            generation = nextSubscriptionGeneration.getAndIncrement(),
+            loginGameTime = loginGameTimes.getOrPut(player.uuid) { now },
+        ).also { subscriptions[player.uuid] = it }
+    }
+
+    private fun streamTraceTiles(
+        player: net.minecraft.server.level.ServerPlayer,
+        level: net.minecraft.server.level.ServerLevel,
+        storage: com.bettercontent.playertraces.storage.TraceStorageManager,
+        subscription: ServerTraceSubscription,
+    ) {
+        val centerX = player.chunkPosition().x
+        val centerZ = player.chunkPosition().z
+        val wanted = HashSet<TileCoordinate>()
+        for (chunkX in centerX - subscription.radius..centerX + subscription.radius) {
+            for (chunkZ in centerZ - subscription.radius..centerZ + subscription.radius) {
+                wanted += TileCoordinate(chunkX, chunkZ)
+            }
+        }
+
+        val evicted = subscription.sentRevisions.keys.filter { it !in wanted }
+        evicted.chunked(512).forEach { batch ->
+            channel.send(
+                PacketDistributor.PLAYER.with { player },
+                TraceTileEvictPacket(
+                    subscription.generation,
+                    subscription.dimension,
+                    batch.map { TraceTileCoordinate(it.chunkX, it.chunkZ) },
+                ),
+            )
+        }
+        evicted.forEach(subscription.sentRevisions::remove)
+
+        var tileCount = 0
+        var recordCount = 0
+        val recordBudget = TracesConfig.common.maxPayloadTraces.get()
+        wanted.asSequence()
+            .sortedWith(compareBy<TileCoordinate> {
+                val dx = it.chunkX - centerX; val dz = it.chunkZ - centerZ
+                dx * dx + dz * dz
+            }.thenBy { it.chunkX }.thenBy { it.chunkZ })
+            .forEach { tile ->
+                if (tileCount >= MAX_TILE_SNAPSHOTS_PER_POLL || recordCount >= recordBudget) return@forEach
+                storage.pruneInvalidSupports(tile.chunkX, tile.chunkZ) { support ->
+                    val state = level.getBlockState(support.position)
+                    !state.isAir && net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.block) == support.blockId
+                }
+                val revision = storage.tileRevision(tile.chunkX, tile.chunkZ)
+                if (subscription.sentRevisions[tile] == revision) return@forEach
+                val traces = storage.queryTraceTile(tile.chunkX, tile.chunkZ).map(::visibleTrace)
+                if (traces.isNotEmpty() && recordCount > 0 && recordCount + traces.size > recordBudget) return@forEach
+                val pages = traces.chunked(TILE_PAGE_SIZE).ifEmpty { listOf(emptyList()) }
+                pages.forEachIndexed { pageIndex, page ->
+                    channel.send(
+                        PacketDistributor.PLAYER.with { player },
+                        TraceTileSnapshotPacket(
+                            subscription.generation,
+                            subscription.dimension,
+                            tile.chunkX,
+                            tile.chunkZ,
+                            revision,
+                            pageIndex,
+                            pages.size,
+                            page,
+                        ),
+                    )
+                }
+                subscription.sentRevisions[tile] = revision
+                tileCount++
+                recordCount += traces.size
+            }
+    }
+
+    private fun visibleTrace(trace: com.bettercontent.playertraces.domain.FootTrace) =
+        com.bettercontent.playertraces.dto.VisibleTraceDto(
+            id = "",
+            sequenceId = "",
+            movementClass = trace.movementClass,
+            x = trace.x,
+            y = trace.y,
+            z = trace.z,
+            facingYaw = trace.facingYaw,
+            strength = trace.strength,
+            sequenceIndex = trace.sequenceIndex,
+            kind = trace.kind,
+            createdAt = trace.createdAt,
+            support = trace.support,
+        )
+
+    private data class TileCoordinate(val chunkX: Int, val chunkZ: Int)
+
+    private data class ServerTraceSubscription(
+        val dimension: String,
+        val radius: Int,
+        val generation: Long,
+        val loginGameTime: Long,
+        val sentRevisions: MutableMap<TileCoordinate, Long> = HashMap(),
+    )
 }

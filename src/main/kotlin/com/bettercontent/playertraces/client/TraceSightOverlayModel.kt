@@ -1,6 +1,5 @@
 package com.bettercontent.playertraces.client
 
-import net.minecraft.resources.ResourceLocation
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -30,19 +29,15 @@ data class TraceSightOverlayTransition(
 }
 
 object TraceSightOverlayModel {
-    val TRACE_SIGHT_OVERLAY_ID: ResourceLocation =
-        ResourceLocation.fromNamespaceAndPath("player_traces", "trace_sight")
     const val FADE_IN_MILLIS = 200L
     const val FADE_OUT_MILLIS = 150L
     const val CENTER_DIM_ALPHA = 0.06f
     const val VIGNETTE_OUTER_ALPHA = 0.32f
-    const val CYAN_KEYLINE_ALPHA = 0.28f
     const val VIGNETTE_BANDS = 12
     const val VIGNETTE_FRACTION = 0.16
     const val MIN_VIGNETTE_SPAN = 36
     const val MAX_VIGNETTE_SPAN = 112
     const val VIGNETTE_RGB = 0x080A0C
-    const val KEYLINE_RGB = 0x35E7FF
 
     fun vignetteSpan(width: Int, height: Int): Int {
         val shorter = min(width.coerceAtLeast(1), height.coerceAtLeast(1))
@@ -64,7 +59,4 @@ object TraceSightOverlayModel {
 
     fun argb(rgb: Int, maxAlpha: Float, visibility: Float): Int =
         (alphaByte(maxAlpha, visibility) shl 24) or (rgb and 0xFFFFFF)
-
-    fun shouldHideHudOverlay(id: ResourceLocation, overlayEnabled: Boolean, visibility: Float): Boolean =
-        (overlayEnabled || visibility > 0.001f) && id.namespace != "minecraft" && id != TRACE_SIGHT_OVERLAY_ID
 }

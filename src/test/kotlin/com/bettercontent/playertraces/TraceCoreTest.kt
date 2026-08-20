@@ -8,6 +8,7 @@ import com.bettercontent.playertraces.domain.FootTrace
 import com.bettercontent.playertraces.domain.MovementClass
 import com.bettercontent.playertraces.domain.TraceAnnotation
 import com.bettercontent.playertraces.domain.GLOBAL_TEAM
+import com.bettercontent.playertraces.domain.TraceSupport
 import com.bettercontent.playertraces.util.Geometry
 import com.bettercontent.playertraces.dto.VisibleAnnotationDto
 import com.bettercontent.playertraces.dto.VisibleTraceDto
@@ -21,6 +22,9 @@ import com.bettercontent.playertraces.client.TraceVisualModel
 import com.bettercontent.playertraces.client.TraceSightOverlayModel
 import com.bettercontent.playertraces.client.TraceSightOverlayTransition
 import com.bettercontent.playertraces.client.OpeningKeyInputGuard
+import com.bettercontent.playertraces.client.FootprintRenderCache
+import com.bettercontent.playertraces.client.TraceRecencyPalette
+import com.bettercontent.playertraces.domain.TraceKind
 import com.bettercontent.playertraces.network.TraceQueryResponsePacket
 import com.bettercontent.playertraces.network.TraceAnnotationsSeenPacket
 import net.minecraft.core.BlockPos
@@ -85,6 +89,8 @@ class TraceCoreTest {
 
     @Test
     fun rendererGeometryContractUsesFiniteQuads() {
+        assertEquals(1_000_000_000, TracesClientRenderer.MAX_RENDERED_FOOTPRINTS)
+        assertEquals(64, FootprintRenderCache.CELL_SIZE_BLOCKS)
         assertTrue(TraceVisualModel.validPrimitiveCount(TraceVisualModel.PIN_VERTEX_COUNT, TraceVisualModel.FOOTPRINT_VERTICES_PER_PRIMITIVE))
         assertTrue(TraceVisualModel.validPrimitiveCount(220 * TraceVisualModel.GUIDANCE_VERTICES_PER_PRIMITIVE, TraceVisualModel.GUIDANCE_VERTICES_PER_PRIMITIVE))
         assertTrue(!TraceVisualModel.validPrimitiveCount(47, TraceVisualModel.FOOTPRINT_VERTICES_PER_PRIMITIVE))
@@ -104,6 +110,16 @@ class TraceCoreTest {
         val arrival = 0.10 / 0.22
         assertEquals(0.50f, TracesClientRenderer.guidanceAlpha(0.10f, 0.0), 0.0001f)
         assertEquals(0.90f, TracesClientRenderer.guidanceAlpha(0.10f, arrival), 0.0001f)
+    }
+
+    @Test
+    fun traceRecencyPaletteUsesLoginAsItsStableDivergencePoint() {
+        val login = 48_000L
+        assertEquals(TraceRecencyPalette.BEFORE_RGB, TraceRecencyPalette.color(0L, login))
+        assertEquals(TraceRecencyPalette.LOGIN_RGB, TraceRecencyPalette.color(login, login))
+        assertEquals(TraceRecencyPalette.AFTER_RGB, TraceRecencyPalette.color(login + 24_000L, login))
+        assertEquals(TraceRecencyPalette.BEFORE_RGB, TraceRecencyPalette.color(-1_000L, login))
+        assertEquals(TraceRecencyPalette.AFTER_RGB, TraceRecencyPalette.color(login + 100_000L, login))
     }
 
     @Test
@@ -140,21 +156,27 @@ class TraceCoreTest {
         assertEquals(0, TraceSightOverlayModel.alphaByte(TraceSightOverlayModel.CENTER_DIM_ALPHA, 0f))
         assertEquals(15, TraceSightOverlayModel.alphaByte(TraceSightOverlayModel.CENTER_DIM_ALPHA, 1f))
         assertEquals(82, TraceSightOverlayModel.alphaByte(TraceSightOverlayModel.VIGNETTE_OUTER_ALPHA, 1f))
-        assertEquals(71, TraceSightOverlayModel.alphaByte(TraceSightOverlayModel.CYAN_KEYLINE_ALPHA, 1f))
         assertEquals(0.25f, TraceSightOverlayModel.scaledAlpha(0.5f, 0.5f), 0.0001f)
         assertEquals(0f, TraceSightOverlayModel.scaledAlpha(0.5f, 0f), 0.0001f)
         assertEquals(0.5f, TraceSightOverlayModel.scaledAlpha(0.5f, 1f), 0.0001f)
     }
 
     @Test
-    fun traceSightHidesOnlyNonVanillaHudOverlays() {
-        val vanilla = ResourceLocation.fromNamespaceAndPath("minecraft", "hotbar")
-        val foreign = ResourceLocation.fromNamespaceAndPath("example_mod", "status")
-        assertFalse(TraceSightOverlayModel.shouldHideHudOverlay(vanilla, true, 1f))
-        assertFalse(TraceSightOverlayModel.shouldHideHudOverlay(TraceSightOverlayModel.TRACE_SIGHT_OVERLAY_ID, true, 1f))
-        assertTrue(TraceSightOverlayModel.shouldHideHudOverlay(foreign, true, 0f))
-        assertTrue(TraceSightOverlayModel.shouldHideHudOverlay(foreign, false, 0.25f))
-        assertFalse(TraceSightOverlayModel.shouldHideHudOverlay(foreign, false, 0f))
+    fun lifecycleMarksUseDistinctCanonicalSizes() {
+        val traces = TraceKind.entries.mapIndexed { index, kind ->
+            VisibleTraceDto(
+                id = kind.name,
+                sequenceId = "lifecycle",
+                movementClass = MovementClass.WALK,
+                x = index.toDouble(), y = 64.0, z = 0.0,
+                facingYaw = 0f, strength = 1f, sequenceIndex = index,
+                kind = kind, createdAt = 1L,
+            )
+        }
+        val marks = TraceVisualModel.marks(traces, 8f, 0.07f, 3).associateBy { it.trace.kind }
+        assertEquals(0.25f, marks.getValue(TraceKind.FOOTPRINT).width)
+        assertEquals(0.44f, marks.getValue(TraceKind.ARRIVAL).width)
+        assertEquals(0.42f, marks.getValue(TraceKind.DEPARTURE).width)
     }
 
     @Test
@@ -246,6 +268,7 @@ class TraceCoreTest {
             sequenceEpoch = 1,
             surviving = true,
             sourcePlayerInternal = player,
+            support = TraceSupport(BlockPos(0, 63, 0), ResourceLocation("minecraft", "stone")),
         )
         state.annotations.add(
             TraceAnnotation(
@@ -407,7 +430,7 @@ class TraceCoreTest {
         val shardPath = dir.resolve("r.0.0.traces")
         TraceSerializer.write(shardPath, stateWithTrace("future"), Geometry.shardToBounds(0, 0))
         val future = Files.readAllBytes(shardPath)
-        ByteBuffer.wrap(future).putShort(4, 3)
+        ByteBuffer.wrap(future).putShort(4, 4)
         val bodySize = future.size - 12
         val crc = CRC32().also { it.update(future, 0, bodySize) }
         ByteBuffer.wrap(future).putLong(bodySize + 4, crc.value)
@@ -443,6 +466,7 @@ class TraceCoreTest {
             sequenceEpoch = 1,
             surviving = true,
             sourcePlayerInternal = UUID.nameUUIDFromBytes("player-$seed".toByteArray()),
+            support = TraceSupport(BlockPos(1, 63, 1), ResourceLocation("minecraft", "stone")),
         )
     }
 
@@ -597,7 +621,10 @@ class TraceCoreTest {
     fun traceQueryResponsePacketCarriesAnnotationSeenFlag() {
         val packet = TraceQueryResponsePacket(
             traces = listOf(
-                VisibleTraceDto("t1", "seq", MovementClass.WALK, 0, 64, 0, 1f, 0, true),
+                VisibleTraceDto(
+                    "t1", "seq", MovementClass.WALK, 0.5, 64.0, 0.5, 0f, 1f, 0, true,
+                    kind = TraceKind.ARRIVAL, createdAt = 11L,
+                ),
             ),
             annotations = listOf(
                 VisibleAnnotationDto("ann", "label", "pin", 0xFF00FF, 5, 64, 6, GLOBAL_TEAM.id, 2, true, true),
@@ -605,6 +632,9 @@ class TraceCoreTest {
             guidanceRoutes = listOf(
                 com.bettercontent.playertraces.dto.GuidanceRouteDto("ann", 2, listOf(GuidancePointDto(0.25, 64.0, 0.75), GuidancePointDto(5.5, 64.0, 6.5))),
             ),
+            subscriptionGeneration = 7L,
+            dimension = "minecraft:overworld",
+            loginGameTime = 12L,
         )
         val buffer = FriendlyByteBuf(Unpooled.buffer())
         packet.encode(buffer)
@@ -613,9 +643,53 @@ class TraceCoreTest {
         assertEquals(true, decoded.annotations.first().seen)
         assertEquals("seq", decoded.traces.first().sequenceId)
         assertTrue(decoded.traces.first().own)
+        assertEquals(TraceKind.ARRIVAL, decoded.traces.first().kind)
+        assertEquals(11L, decoded.traces.first().createdAt)
         assertTrue(decoded.annotations.first().canEdit)
         assertEquals(1, decoded.guidanceRoutes.size)
         assertEquals(GuidancePointDto(5.5, 64.0, 6.5), decoded.guidanceRoutes.single().path.last())
+        assertEquals(7L, decoded.subscriptionGeneration)
+        assertEquals("minecraft:overworld", decoded.dimension)
+        assertEquals(12L, decoded.loginGameTime)
+    }
+
+    @Test
+    fun traceTilePacketCarriesCompactLifecycleAndSupportMetadata() {
+        val support = TraceSupport(BlockPos(4, 63, -3), ResourceLocation("minecraft", "stone"))
+        val packet = com.bettercontent.playertraces.network.TraceTileSnapshotPacket(
+            generation = 9L,
+            dimension = "minecraft:overworld",
+            chunkX = 0,
+            chunkZ = -1,
+            revision = 14L,
+            pageIndex = 0,
+            pageCount = 1,
+            traces = listOf(
+                VisibleTraceDto(
+                    id = "server-private-id",
+                    sequenceId = "server-private-sequence",
+                    movementClass = MovementClass.SPRINT,
+                    x = 4.25,
+                    y = 64.012,
+                    z = -2.75,
+                    facingYaw = 37f,
+                    strength = 1.25f,
+                    sequenceIndex = 3,
+                    kind = TraceKind.FOOTPRINT,
+                    createdAt = 1_234L,
+                    support = support,
+                ),
+            ),
+        )
+        val buffer = FriendlyByteBuf(Unpooled.buffer())
+        packet.encode(buffer)
+        val decoded = com.bettercontent.playertraces.network.TraceTileSnapshotPacket.decode(buffer)
+        assertEquals(9L, decoded.generation)
+        assertEquals(14L, decoded.revision)
+        assertEquals("", decoded.traces.single().id)
+        assertEquals(TraceKind.FOOTPRINT, decoded.traces.single().kind)
+        assertEquals(1_234L, decoded.traces.single().createdAt)
+        assertEquals(support, decoded.traces.single().support)
     }
 
     @Test

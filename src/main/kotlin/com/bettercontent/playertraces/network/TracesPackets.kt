@@ -19,6 +19,8 @@ private const val MAX_GUIDANCE_ROUTES = 256
 private const val MAX_GUIDANCE_POINTS = 4096
 private const val MAX_BLOOD_POOLS = 256
 private const val MAX_DEATH_ECHOES = 32
+private const val MAX_TRACE_TILE_PAGE_RECORDS = 1024
+private const val MAX_TRACE_TILE_EVICTIONS = 512
 
 data class TraceQueryRequestPacket(val radius: Int) {
     fun encode(buf: FriendlyByteBuf) {
@@ -66,6 +68,9 @@ data class TraceQueryResponsePacket(
     val guidanceTruncated: Boolean = false,
     val bloodPools: List<VisibleBloodPoolDto> = emptyList(),
     val deathEchoes: List<VisibleDeathEchoDto> = emptyList(),
+    val subscriptionGeneration: Long = 0L,
+    val dimension: String = "",
+    val loginGameTime: Long = 0L,
 ) {
     fun encode(buf: FriendlyByteBuf) {
         require(traces.size <= MAX_RESPONSE_RECORDS && annotations.size <= MAX_RESPONSE_RECORDS) { "trace response exceeds protocol limits" }
@@ -86,6 +91,7 @@ data class TraceQueryResponsePacket(
             buf.writeFloat(it.strength)
             buf.writeInt(it.sequenceIndex)
             buf.writeBoolean(it.own)
+            writeTraceMetadata(buf, it)
         }
 
         buf.writeInt(annotations.size)
@@ -135,6 +141,10 @@ data class TraceQueryResponsePacket(
             buf.writeDouble(it.x); buf.writeDouble(it.y); buf.writeDouble(it.z); buf.writeVarLong(it.createdAt)
             buf.writeByteArray(it.encodedClip)
         }
+        require(subscriptionGeneration >= 0L && dimension.length <= 256 && loginGameTime >= 0L) { "trace subscription context is invalid" }
+        buf.writeVarLong(subscriptionGeneration)
+        buf.writeUtf(dimension, 256)
+        buf.writeVarLong(loginGameTime)
     }
 
     companion object {
@@ -158,6 +168,8 @@ data class TraceQueryResponsePacket(
                 require(s.isFinite() && s >= 0f) { "trace response strength is invalid" }
                 val seq = buf.readInt()
                 require(seq >= 0) { "trace response sequence index is invalid" }
+                val own = buf.readBoolean()
+                val metadata = readTraceMetadata(buf)
                 traces += VisibleTraceDto(
                     id,
                     sequenceId,
@@ -168,7 +180,10 @@ data class TraceQueryResponsePacket(
                     facingYaw,
                     s,
                     seq,
-                    buf.readBoolean(),
+                    own,
+                    metadata.kind,
+                    metadata.createdAt,
+                    metadata.support,
                 )
             }
 
@@ -240,9 +255,129 @@ data class TraceQueryResponsePacket(
                 require(clip.isNotEmpty()) { "death echo response payload is empty" }
                 VisibleDeathEchoDto(id, owner, x, y, z, created, clip)
             }
-            return TraceQueryResponsePacket(traces, annotations, routes, guidanceTotal, guidanceTruncated, pools, echoes)
+            val generation = buf.readVarLong().also { require(it >= 0L) { "trace subscription generation is invalid" } }
+            val dimension = buf.readUtf(256)
+            val loginGameTime = buf.readVarLong().also { require(it >= 0L) { "trace login time is invalid" } }
+            return TraceQueryResponsePacket(
+                traces, annotations, routes, guidanceTotal, guidanceTruncated, pools, echoes,
+                generation, dimension, loginGameTime,
+            )
         }
     }
+}
+
+data class TraceTileSnapshotPacket(
+    val generation: Long,
+    val dimension: String,
+    val chunkX: Int,
+    val chunkZ: Int,
+    val revision: Long,
+    val pageIndex: Int,
+    val pageCount: Int,
+    val traces: List<VisibleTraceDto>,
+) {
+    fun encode(buf: FriendlyByteBuf) {
+        require(generation >= 0L && dimension.length <= 256 && revision >= 0L) { "trace tile identity is invalid" }
+        require(pageCount in 1..4096 && pageIndex in 0 until pageCount) { "trace tile page is invalid" }
+        require(traces.size <= MAX_TRACE_TILE_PAGE_RECORDS) { "trace tile page exceeds protocol limit" }
+        buf.writeVarLong(generation); buf.writeUtf(dimension, 256)
+        buf.writeInt(chunkX); buf.writeInt(chunkZ); buf.writeVarLong(revision)
+        buf.writeVarInt(pageIndex); buf.writeVarInt(pageCount); buf.writeVarInt(traces.size)
+        traces.forEach { writeVisibleTrace(buf, it) }
+    }
+
+    companion object {
+        fun decode(buf: FriendlyByteBuf): TraceTileSnapshotPacket {
+            val generation = buf.readVarLong().also { require(it >= 0L) { "trace tile generation is invalid" } }
+            val dimension = buf.readUtf(256)
+            val chunkX = buf.readInt(); val chunkZ = buf.readInt()
+            val revision = buf.readVarLong().also { require(it >= 0L) { "trace tile revision is invalid" } }
+            val pageIndex = buf.readVarInt(); val pageCount = buf.readVarInt()
+            require(pageCount in 1..4096 && pageIndex in 0 until pageCount) { "trace tile page is invalid" }
+            val count = buf.readVarInt()
+            require(count in 0..MAX_TRACE_TILE_PAGE_RECORDS) { "trace tile record count is invalid" }
+            return TraceTileSnapshotPacket(
+                generation, dimension, chunkX, chunkZ, revision, pageIndex, pageCount,
+                List(count) { readVisibleTrace(buf) },
+            )
+        }
+    }
+}
+
+data class TraceTileCoordinate(val chunkX: Int, val chunkZ: Int)
+
+data class TraceTileEvictPacket(
+    val generation: Long,
+    val dimension: String,
+    val tiles: List<TraceTileCoordinate>,
+) {
+    fun encode(buf: FriendlyByteBuf) {
+        require(generation >= 0L && dimension.length <= 256 && tiles.size <= MAX_TRACE_TILE_EVICTIONS) { "trace tile eviction is invalid" }
+        buf.writeVarLong(generation); buf.writeUtf(dimension, 256); buf.writeVarInt(tiles.size)
+        tiles.forEach { buf.writeInt(it.chunkX); buf.writeInt(it.chunkZ) }
+    }
+
+    companion object {
+        fun decode(buf: FriendlyByteBuf): TraceTileEvictPacket {
+            val generation = buf.readVarLong().also { require(it >= 0L) }
+            val dimension = buf.readUtf(256)
+            val count = buf.readVarInt().also { require(it in 0..MAX_TRACE_TILE_EVICTIONS) }
+            return TraceTileEvictPacket(generation, dimension, List(count) { TraceTileCoordinate(buf.readInt(), buf.readInt()) })
+        }
+    }
+}
+
+private data class TraceMetadata(
+    val kind: com.bettercontent.playertraces.domain.TraceKind,
+    val createdAt: Long,
+    val support: com.bettercontent.playertraces.domain.TraceSupport?,
+)
+
+private fun writeTraceMetadata(buf: FriendlyByteBuf, trace: VisibleTraceDto) {
+    require(trace.createdAt >= 0L) { "trace creation time is invalid" }
+    buf.writeByte(trace.kind.serializedId)
+    buf.writeVarLong(trace.createdAt)
+    buf.writeBoolean(trace.support != null)
+    trace.support?.let {
+        buf.writeLong(it.position.asLong())
+        buf.writeResourceLocation(it.blockId)
+    }
+}
+
+private fun readTraceMetadata(buf: FriendlyByteBuf): TraceMetadata {
+    val kind = com.bettercontent.playertraces.domain.TraceKind.fromSerializedId(buf.readUnsignedByte().toInt())
+    val createdAt = buf.readVarLong().also { require(it >= 0L) { "trace creation time is invalid" } }
+    val support = if (buf.readBoolean()) {
+        com.bettercontent.playertraces.domain.TraceSupport(
+            net.minecraft.core.BlockPos.of(buf.readLong()),
+            buf.readResourceLocation(),
+        )
+    } else null
+    return TraceMetadata(kind, createdAt, support)
+}
+
+private fun writeVisibleTrace(buf: FriendlyByteBuf, trace: VisibleTraceDto) {
+    require(validPoint(trace.x, trace.y, trace.z) && trace.facingYaw.isFinite()) { "trace geometry is invalid" }
+    require(trace.strength.isFinite() && trace.strength >= 0f && trace.sequenceIndex >= 0) { "trace appearance is invalid" }
+    buf.writeByte(trace.movementClass.ordinal)
+    buf.writeDouble(trace.x); buf.writeDouble(trace.y); buf.writeDouble(trace.z)
+    buf.writeFloat(trace.facingYaw); buf.writeFloat(trace.strength); buf.writeVarInt(trace.sequenceIndex)
+    writeTraceMetadata(buf, trace)
+}
+
+private fun readVisibleTrace(buf: FriendlyByteBuf): VisibleTraceDto {
+    val movementOrdinal = buf.readUnsignedByte().toInt()
+    require(movementOrdinal in com.bettercontent.playertraces.domain.MovementClass.entries.indices) { "trace movement class is invalid" }
+    val x = buf.readDouble(); val y = buf.readDouble(); val z = buf.readDouble(); val yaw = buf.readFloat()
+    require(validPoint(x, y, z) && yaw.isFinite()) { "trace geometry is invalid" }
+    val strength = buf.readFloat().also { require(it.isFinite() && it >= 0f) { "trace strength is invalid" } }
+    val sequenceIndex = buf.readVarInt().also { require(it >= 0) { "trace sequence index is invalid" } }
+    val metadata = readTraceMetadata(buf)
+    return VisibleTraceDto(
+        id = "", sequenceId = "", movementClass = com.bettercontent.playertraces.domain.MovementClass.entries[movementOrdinal],
+        x = x, y = y, z = z, facingYaw = yaw, strength = strength, sequenceIndex = sequenceIndex,
+        kind = metadata.kind, createdAt = metadata.createdAt, support = metadata.support,
+    )
 }
 
 private fun validPoint(x: Double, y: Double, z: Double): Boolean =
@@ -406,19 +541,52 @@ data class AnnotationDeletePacket(val id: String, val expectedRevision: Int) {
     }
 }
 
-data class DeathCaptureRequestPacket(val nonce: UUID, val x: Double, val y: Double, val z: Double) {
+data class DeathCaptureRequestPacket(
+    val nonce: UUID,
+    val x: Double,
+    val y: Double,
+    val z: Double,
+    val captureToken: UUID? = null,
+) {
     fun encode(buf: FriendlyByteBuf) {
         require(validPoint(x, y, z)) { "death capture position is invalid" }
         buf.writeUUID(nonce); buf.writeDouble(x); buf.writeDouble(y); buf.writeDouble(z)
+        buf.writeBoolean(captureToken != null); captureToken?.let(buf::writeUUID)
     }
 
     companion object {
         fun decode(buf: FriendlyByteBuf): DeathCaptureRequestPacket {
-            val packet = DeathCaptureRequestPacket(buf.readUUID(), buf.readDouble(), buf.readDouble(), buf.readDouble())
+            val nonce = buf.readUUID(); val x = buf.readDouble(); val y = buf.readDouble(); val z = buf.readDouble()
+            val packet = DeathCaptureRequestPacket(nonce, x, y, z, if (buf.readBoolean()) buf.readUUID() else null)
             require(validPoint(packet.x, packet.y, packet.z)) { "death capture position is invalid" }
             return packet
         }
     }
+}
+
+data class DownedCaptureFreezePacket(
+    val token: UUID,
+    val dimension: String,
+    val x: Double,
+    val y: Double,
+    val z: Double,
+    val downGameTime: Long,
+) {
+    fun encode(buf: FriendlyByteBuf) {
+        require(dimension.length <= 256 && validPoint(x, y, z) && downGameTime >= 0L) { "downed capture freeze is invalid" }
+        buf.writeUUID(token); buf.writeUtf(dimension, 256); buf.writeDouble(x); buf.writeDouble(y); buf.writeDouble(z); buf.writeVarLong(downGameTime)
+    }
+
+    companion object {
+        fun decode(buf: FriendlyByteBuf): DownedCaptureFreezePacket = DownedCaptureFreezePacket(
+            buf.readUUID(), buf.readUtf(256), buf.readDouble(), buf.readDouble(), buf.readDouble(), buf.readVarLong(),
+        ).also { require(validPoint(it.x, it.y, it.z) && it.downGameTime >= 0L) { "downed capture freeze is invalid" } }
+    }
+}
+
+data class DownedCaptureDiscardPacket(val token: UUID) {
+    fun encode(buf: FriendlyByteBuf) { buf.writeUUID(token) }
+    companion object { fun decode(buf: FriendlyByteBuf) = DownedCaptureDiscardPacket(buf.readUUID()) }
 }
 
 data class DeathEchoSubmitPacket(val nonce: UUID, val encodedClip: ByteArray) {

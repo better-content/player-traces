@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PACK_ROOT="${TRACES_REFERENCE_PACK:-/home/dev/better-content}"
+PACK_ROOT="${TRACES_REFERENCE_PACK:-$ROOT/../../better-content-modpack}"
 DEPS="$ROOT/build/shader-compat/deps"
 RUN="$ROOT/build/visual-run"
 SHADER_NAME="ComplementaryReimagined_r5.8.1.zip"
@@ -81,4 +81,5 @@ cat >"$RUN/shader-compat-artifacts.json" <<EOF
 }
 EOF
 
-TRACES_REUSE_VISUAL_RUN=1 TRACES_SHADER_COMPAT=1 "$ROOT/scripts/visual-validation/run.sh"
+TRACES_REFERENCE_PACK="$PACK_ROOT" TRACES_REUSE_VISUAL_RUN=1 TRACES_SHADER_COMPAT=1 \
+  "$ROOT/scripts/visual-validation/run.sh"

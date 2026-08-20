@@ -19,13 +19,14 @@ import com.bettercontent.playertraces.client.death.DeathEchoRenderer
 import net.minecraft.client.renderer.LevelRenderer
 
 object TracesClientRenderer {
+    internal const val MAX_RENDERED_FOOTPRINTS = 1_000_000_000
     private var visualStageObserved = false
     private const val NOTE_RGB = 0xFFFFFF
     private const val LABEL_RGB = 0xFFFFFF
     private const val LABEL_OUTLINE_RGB = 0x000000
     internal const val LABEL_SCALE = 0.021f
     internal const val LABEL_HEIGHT = 0.42
-    private const val MAX_LABELS = 8
+    private const val MAX_LABELS = 128
     internal const val GUIDANCE_COOL_RGB = 0x35E7FF
     internal const val GUIDANCE_WARM_RGB = 0xFF9F45
     internal const val GUIDANCE_BASE_ALPHA = 0.50f
@@ -68,8 +69,8 @@ object TracesClientRenderer {
             TracesClientState.playingAnnotationEchoes(player.position(), nowMillis, traceSightVisible = false)
             return
         }
-        val marks = TraceVisualModel.marks(
-            TracesClientState.visibleTraces(), 1f, 0f, TracesConfig.client.maxRenderedMarks.get(),
+        val footprintData = FootprintRenderCache.renderData(
+            level, TracesClientState.visibleTraces(), TracesClientState.footprintPayloadRevision,
         )
         val annotations = TracesClientState.visibleAnnotations()
             .sortedBy { player.distanceToSqr(it.x + 0.5, it.y + 0.5, it.z + 0.5) }
@@ -78,7 +79,7 @@ object TracesClientRenderer {
         val bloodPools = TracesClientState.visibleBloodPools()
         val deathEchoes = TracesClientState.visibleDeathEchoes()
         val noteEchoes = TracesClientState.playingAnnotationEchoes(player.position(), nowMillis, traceSightVisible = true)
-        if (marks.isEmpty() && annotations.isEmpty() && guidance.isEmpty() && bloodPools.isEmpty() && deathEchoes.isEmpty() && noteEchoes.isEmpty()) return
+        if (footprintData.cells.isEmpty() && annotations.isEmpty() && guidance.isEmpty() && bloodPools.isEmpty() && deathEchoes.isEmpty() && noteEchoes.isEmpty()) return
 
         val pose = event.poseStack
         pose.pushPose()
@@ -105,23 +106,22 @@ object TracesClientRenderer {
             guidanceSegments.values.forEach { segment ->
                 emitGuidanceSegment(guidanceConsumer, pose.last().pose(), segment, animationSeconds, traceVisibility)
             }
-            val drawableFootprints = marks.mapNotNull { mark ->
-                val pos = BlockPos.containing(mark.trace.x, mark.trace.y, mark.trace.z)
-                if (!visible(pos, camera, event, distance)) return@mapNotNull null
-                val quad = SurfaceAnchorResolver.footprintQuad(
-                    level, mark.trace, mark.angle, mark.lateralOffset, mark.longitudinalOffset,
-                ) ?: return@mapNotNull null
-                drawable++
-                submitted++
-                mark to quad
+            footprintData.cells.forEach cellLoop@{ cell ->
+                val cellDistance = distance + FootprintRenderCache.CELL_SIZE_BLOCKS
+                if (camera.position.distanceToSqr(cell.bounds.center) > cellDistance * cellDistance ||
+                    !event.frustum.isVisible(cell.bounds)
+                ) return@cellLoop
+                cell.footprints.forEach footprintLoop@{ cached ->
+                    if (camera.position.distanceToSqr(cached.bounds.center) > distance * distance) return@footprintLoop
+                    emitQuad(
+                        buffer.getBuffer(TracesRenderTypes.trace(cached.mark.trace.kind)), pose.last().pose(), cached.quad,
+                        TraceSightOverlayModel.scaledAlpha(cached.mark.alpha, traceVisibility), cached.mark.color, FULL_BRIGHT,
+                    )
+                    drawable++
+                    submitted++
+                }
             }
-            drawableFootprints.forEach { (mark, quad) ->
-                emitQuad(
-                    buffer.getBuffer(TracesRenderTypes.footprints), pose.last().pose(), quad,
-                    TraceSightOverlayModel.scaledAlpha(mark.alpha, traceVisibility), mark.color, FULL_BRIGHT,
-                )
-            }
-            buffer.endBatch(TracesRenderTypes.footprints)
+            TracesRenderTypes.traceTypes.forEach(buffer::endBatch)
             annotations.forEach { annotation ->
                 val pos = BlockPos(annotation.x, annotation.y, annotation.z)
                 if (!visible(pos, camera, event, distance)) return@forEach
@@ -183,7 +183,7 @@ object TracesClientRenderer {
                 TracesClientLog.LOGGER.info(
                     "TRACES_MVP_RENDER accepted={} drawable={} submitted={} footprints={} notes={} noteEchoes={} guidanceSegments={}",
                     TracesClientState.lastPayloadTraceCount + TracesClientState.lastPayloadAnnotationCount,
-                    drawable, submitted, marks.size, annotations.size, noteEchoes.size, guidanceSegments.size,
+                    drawable, submitted, footprintData.sourceCount, annotations.size, noteEchoes.size, guidanceSegments.size,
                 )
             }
         } finally {

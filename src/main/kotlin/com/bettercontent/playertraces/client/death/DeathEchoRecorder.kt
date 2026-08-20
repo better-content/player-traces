@@ -39,6 +39,7 @@ object DeathEchoRecorder {
     private var currentPlayer: UUID? = null
     private var currentDimension: String? = null
     private var selectedCapture: SelectedCapture? = null
+    private var frozenDeathCapture: FrozenDeathCapture? = null
 
     @SubscribeEvent
     @JvmStatic
@@ -50,6 +51,7 @@ object DeathEchoRecorder {
         val dimension = level.dimension().location().toString()
         if (currentPlayer != player.uuid || currentDimension != dimension) {
             rollingFrames.clear()
+            frozenDeathCapture = null
             currentPlayer = player.uuid
             currentDimension = dimension
             lastSampleGameTime = Long.MIN_VALUE
@@ -59,6 +61,7 @@ object DeathEchoRecorder {
         val channels = captureBones(player, event.partialTick) ?: return
         rollingFrames.add(
             AbsoluteFrame(
+                gameTime = level.gameTime,
                 position = player.getPosition(event.partialTick),
                 bodyYaw = radians(lerpDegrees(event.partialTick, player.yBodyRotO, player.yBodyRot)),
                 headYaw = radians(lerpDegrees(event.partialTick, player.yHeadRotO, player.yHeadRot)),
@@ -83,32 +86,109 @@ object DeathEchoRecorder {
         capturedBones = encodeParts(event.renderer.model)
     }
 
-    fun onDeathConfirmed(request: DeathCaptureRequestPacket) {
+    fun freezeForDowned(
+        captureToken: UUID,
+        dimension: String,
+        x: Double,
+        y: Double,
+        z: Double,
+        downGameTime: Long,
+    ): Boolean {
         val snapshot = rollingFrames.snapshot()
-        if (snapshot.isEmpty()) {
-            log.warn("TRACES_DEATH_ECHO_SKIPPED reason=no_rolling_frames nonce={}", request.nonce)
-            return
+            .filter { it.gameTime < downGameTime }
+            .takeLast(EchoClip.SAMPLE_RATE * RECORDING_SECONDS)
+        if (snapshot.isEmpty() || currentDimension != dimension) {
+            frozenDeathCapture = null
+            log.warn(
+                "TRACES_DEATH_ECHO_FREEZE_SKIPPED reason={} token={} expectedDimension={} clientDimension={}",
+                if (snapshot.isEmpty()) "no_rolling_frames" else "dimension_mismatch",
+                captureToken,
+                dimension,
+                currentDimension,
+            )
+            return false
         }
-        val death = Vec3(request.x, request.y, request.z)
-        val frames = snapshot.takeLast(EchoClip.SAMPLE_RATE * RECORDING_SECONDS).map { frame ->
-            val offset = frame.position.subtract(death)
+        val anchor = Vec3(x, y, z)
+        return runCatching {
+            frozenDeathCapture = FrozenDeathCapture(
+                token = captureToken,
+                dimension = dimension,
+                anchor = anchor,
+                encodedClip = encodeDeath(snapshot, anchor),
+            )
+            log.info(
+                "TRACES_DEATH_ECHO_FROZEN frames={} bytes={} token={} dimension={}",
+                snapshot.size,
+                frozenDeathCapture!!.encodedClip.size,
+                captureToken,
+                dimension,
+            )
+            true
+        }.getOrElse {
+            frozenDeathCapture = null
+            log.warn("TRACES_DEATH_ECHO_FREEZE_SKIPPED reason=encode_failed token={}", captureToken, it)
+            false
+        }
+    }
+
+    fun discardDownedCapture(captureToken: UUID? = null) {
+        val frozen = frozenDeathCapture ?: return
+        if (captureToken == null || frozen.token == captureToken) {
+            frozenDeathCapture = null
+            log.debug("Discarded frozen downed death capture {}", frozen.token)
+        }
+    }
+
+    fun onDeathConfirmed(request: DeathCaptureRequestPacket) = onDeathConfirmed(request, null)
+
+    fun onDeathConfirmed(request: DeathCaptureRequestPacket, captureToken: UUID?) {
+        val encoded = if (captureToken != null) {
+            val frozen = frozenDeathCapture
+            if (frozen == null || frozen.token != captureToken || frozen.dimension != currentDimension) {
+                log.warn("TRACES_DEATH_ECHO_SKIPPED reason=frozen_capture_absent token={} nonce={}", captureToken, request.nonce)
+                return
+            }
+            frozenDeathCapture = null
+            val requestedAnchor = Vec3(request.x, request.y, request.z)
+            if (frozen.anchor.distanceToSqr(requestedAnchor) > MAX_ANCHOR_DRIFT_SQUARED) {
+                log.warn("TRACES_DEATH_ECHO_SKIPPED reason=frozen_anchor_mismatch token={} nonce={}", captureToken, request.nonce)
+                return
+            }
+            frozen.encodedClip
+        } else {
+            frozenDeathCapture = null
+            val snapshot = rollingFrames.snapshot().takeLast(EchoClip.SAMPLE_RATE * RECORDING_SECONDS)
+            if (snapshot.isEmpty()) {
+                log.warn("TRACES_DEATH_ECHO_SKIPPED reason=no_rolling_frames nonce={}", request.nonce)
+                return
+            }
+            runCatching { encodeDeath(snapshot, Vec3(request.x, request.y, request.z)) }.getOrElse {
+                log.warn("TRACES_DEATH_ECHO_SKIPPED reason=encode_failed nonce={}", request.nonce, it)
+                return
+            }
+        }
+        runCatching {
+            TracesNetwork.submitDeathEcho(DeathEchoSubmitPacket(request.nonce, encoded))
+            rollingFrames.clear()
+            log.info(
+                "TRACES_DEATH_ECHO_SUBMITTED camera={} bytes={} nonce={} frozen={}",
+                Minecraft.getInstance().options.cameraType.name.lowercase(), encoded.size, request.nonce, captureToken != null,
+            )
+        }.onFailure {
+            log.warn("TRACES_DEATH_ECHO_SKIPPED reason=submit_failed nonce={}", request.nonce, it)
+        }
+    }
+
+    private fun encodeDeath(frames: List<AbsoluteFrame>, anchor: Vec3): ByteArray {
+        require(frames.isNotEmpty()) { "no player pose frames were captured" }
+        val relativeFrames = frames.map { frame ->
+            val offset = frame.position.subtract(anchor)
             EchoFrame(
                 EchoRoot(offset.x.toFloat(), offset.y.toFloat(), offset.z.toFloat(), frame.bodyYaw, frame.headYaw),
                 frame.channels.copyOf(),
             )
         }
-        runCatching {
-            val clip = EchoClip(EchoEncoding.BONE, EchoClip.SAMPLE_RATE, intArrayOf(), frames)
-            val encoded = EchoClipCodec.encodeQuantized(clip)
-            TracesNetwork.submitDeathEcho(DeathEchoSubmitPacket(request.nonce, encoded))
-            rollingFrames.clear()
-            log.info(
-                "TRACES_DEATH_ECHO_SUBMITTED camera={} frames={} bytes={} nonce={}",
-                Minecraft.getInstance().options.cameraType.name.lowercase(), frames.size, encoded.size, request.nonce,
-            )
-        }.onFailure {
-            log.warn("TRACES_DEATH_ECHO_SKIPPED reason=encode_failed nonce={}", request.nonce, it)
-        }
+        return EchoClipCodec.encodeQuantized(EchoClip(EchoEncoding.BONE, EchoClip.SAMPLE_RATE, intArrayOf(), relativeFrames))
     }
 
     internal fun bufferedFrameCount(): Int = rollingFrames.size
@@ -175,6 +255,7 @@ object DeathEchoRecorder {
         currentPlayer = null
         currentDimension = null
         lastSampleGameTime = Long.MIN_VALUE
+        frozenDeathCapture = null
         selectedCapture?.fail?.invoke(IllegalStateException("gesture capture was interrupted"))
         selectedCapture = null
     }
@@ -189,6 +270,7 @@ object DeathEchoRecorder {
     private fun radians(degrees: Float): Float = degrees * (PI.toFloat() / 180f)
 
     private data class AbsoluteFrame(
+        val gameTime: Long,
         val position: Vec3,
         val bodyYaw: Float,
         val headYaw: Float,
@@ -201,6 +283,14 @@ object DeathEchoRecorder {
         val fail: (Throwable) -> Unit,
     )
 
+    private data class FrozenDeathCapture(
+        val token: UUID,
+        val dimension: String,
+        val anchor: Vec3,
+        val encodedClip: ByteArray,
+    )
+
     private const val RECORDING_SECONDS = 3
     private const val FULL_BRIGHT = 0x00F000F0
+    private const val MAX_ANCHOR_DRIFT_SQUARED = 0.01
 }

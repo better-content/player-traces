@@ -16,6 +16,7 @@ import java.util.UUID
 import com.bettercontent.playertraces.domain.FootTrace
 import com.bettercontent.playertraces.domain.MovementClass
 import com.bettercontent.playertraces.domain.TraceAnnotation
+import com.bettercontent.playertraces.domain.TraceKind
 import com.bettercontent.playertraces.domain.GLOBAL_TEAM
 import com.mojang.logging.LogUtils
 import net.minecraft.world.level.block.Blocks
@@ -28,6 +29,10 @@ import com.bettercontent.playertraces.network.DeathEchoSubmitPacket
 import com.bettercontent.playertraces.network.TracesNetwork
 import com.bettercontent.playertraces.storage.DeathTraceSavedData
 import net.minecraft.world.phys.shapes.CollisionContext
+import net.minecraft.resources.ResourceKey
+import net.minecraft.world.level.Level
+import com.bettercontent.playertraces.logic.TraceSupportResolver
+import com.bettercontent.playertraces.compat.DownedPlayerRevivalBridge
 
 class TraceServerRuntime(val server: MinecraftServer) {
     private val log = LogUtils.getLogger()
@@ -39,6 +44,9 @@ class TraceServerRuntime(val server: MinecraftServer) {
     private val tickCounter = AtomicInteger()
     private val capturedCounter = java.util.concurrent.atomic.AtomicLong()
     private val pendingDeathCaptures = ConcurrentHashMap<UUID, PendingDeathCapture>()
+    private val lastPlayerLocations = ConcurrentHashMap<UUID, PlayerLocation>()
+    private val downedDeathCaptures = ConcurrentHashMap<UUID, DownedDeathCapture>()
+    private val unavailableDownedCaptures = ConcurrentHashMap.newKeySet<UUID>()
     private val annotationEchoesInitialized = ConcurrentHashMap.newKeySet<String>()
 
     private val config = TracesConfig.common
@@ -72,10 +80,10 @@ class TraceServerRuntime(val server: MinecraftServer) {
 
     fun onServerTick() {
         val tick = tickCounter.incrementAndGet()
+        for (level in server.allLevels) {
+            erosion(level).tick(level, tick)
+        }
         if (tick % 20 == 0) {
-            for (level in server.allLevels) {
-                storage(level).tickFlush()
-            }
             pendingDeathCaptures.entries.removeIf { it.value.expiresAtServerTick < server.tickCount }
         }
     }
@@ -84,6 +92,7 @@ class TraceServerRuntime(val server: MinecraftServer) {
 
     fun onPlayerTick(player: ServerPlayer) {
         capturedCounter.addAndGet(capture(player.serverLevel()).onPlayerTick(player).toLong())
+        remember(player)
     }
 
     fun capturedCount(): Long = capturedCounter.get()
@@ -149,13 +158,116 @@ class TraceServerRuntime(val server: MinecraftServer) {
         erosion(level).onFluidTick(blockPos)
     }
 
-    fun onPlayerChangedDimension(player: ServerPlayer) {
+    fun onPlayerLogin(player: ServerPlayer) {
+        addLifecycleMarker(player.serverLevel(), player, TraceKind.ARRIVAL, player.position(), player.yRot)
+        if (DownedPlayerRevivalBridge.isDowned(player)) unavailableDownedCaptures += player.uuid
+        remember(player)
+    }
+
+    fun onPlayerLogout(player: ServerPlayer) {
+        addLifecycleMarker(player.serverLevel(), player, TraceKind.DEPARTURE, player.position(), player.yRot)
+        lastPlayerLocations.remove(player.uuid)
+        downedDeathCaptures.remove(player.uuid)?.let { TracesNetwork.discardDeathEcho(player, it.token) }
+        unavailableDownedCaptures.remove(player.uuid)
+        pendingDeathCaptures.entries.removeIf { it.value.playerId == player.uuid }
         capture(player.serverLevel()).onDimensionTeleport(player)
+    }
+
+    fun onPlayerRespawn(player: ServerPlayer) {
+        addLifecycleMarker(player.serverLevel(), player, TraceKind.ARRIVAL, player.position(), player.yRot)
+        unavailableDownedCaptures.remove(player.uuid)
+        remember(player)
+        capture(player.serverLevel()).onDimensionTeleport(player)
+    }
+
+    fun onPlayerChangedDimension(player: ServerPlayer, from: ResourceKey<Level>) {
+        val prior = lastPlayerLocations[player.uuid]
+        val oldLevel = server.getLevel(from)
+        if (oldLevel != null && prior?.dimension == from.location().toString()) {
+            addLifecycleMarker(oldLevel, player, TraceKind.DEPARTURE, prior.position, prior.yaw)
+            capture(oldLevel).onDimensionTeleport(player)
+        }
+        downedDeathCaptures.remove(player.uuid)?.let {
+            TracesNetwork.discardDeathEcho(player, it.token)
+            unavailableDownedCaptures += player.uuid
+        }
+        addLifecycleMarker(player.serverLevel(), player, TraceKind.ARRIVAL, player.position(), player.yRot)
+        capture(player.serverLevel()).onDimensionTeleport(player)
+        remember(player)
+    }
+
+    fun onSupportRemoved(level: ServerLevel, blockPos: BlockPos): Int = storage(level).removeBySupport(blockPos)
+
+    fun onPlayerDowned(player: ServerPlayer): DownedDeathCapture {
+        val level = player.serverLevel()
+        return DownedDeathCapture(
+            token = UUID.randomUUID(),
+            dimension = level.dimension().location().toString(),
+            position = player.position(),
+            createdAt = level.gameTime,
+        ).also { capture ->
+            unavailableDownedCaptures.remove(player.uuid)
+            downedDeathCaptures.put(player.uuid, capture)?.let { prior ->
+                TracesNetwork.discardDeathEcho(player, prior.token)
+            }
+            TracesNetwork.freezeDeathEcho(player, capture.token, capture.dimension, capture.position, capture.createdAt)
+        }
+    }
+
+    fun onPlayerRevived(player: ServerPlayer): UUID? {
+        unavailableDownedCaptures.remove(player.uuid)
+        return downedDeathCaptures.remove(player.uuid)?.token?.also { TracesNetwork.discardDeathEcho(player, it) }
+    }
+
+    private fun remember(player: ServerPlayer) {
+        lastPlayerLocations[player.uuid] = PlayerLocation(
+            player.serverLevel().dimension().location().toString(),
+            player.position(),
+            player.yRot.takeIf { it.isFinite() } ?: 0f,
+        )
+    }
+
+    private fun addLifecycleMarker(
+        level: ServerLevel,
+        player: ServerPlayer,
+        kind: TraceKind,
+        position: Vec3,
+        yaw: Float,
+    ) {
+        val surface = TraceSupportResolver.resolve(level, position, LIFECYCLE_SUPPORT_DEPTH)
+        val rendered = surface?.position ?: position.add(0.0, 0.012, 0.0)
+        val sequence = UUID.randomUUID()
+        storage(level).addFootTrace(
+            FootTrace(
+                id = UUID.randomUUID(),
+                levelKey = level.dimension().location().toString(),
+                x = rendered.x,
+                y = rendered.y,
+                z = rendered.z,
+                facingYaw = yaw.takeIf { it.isFinite() } ?: 0f,
+                movementClass = MovementClass.WALK,
+                strength = 1.0f,
+                sequenceId = sequence,
+                sequenceIndex = 0,
+                createdAt = level.gameTime,
+                sequenceEpoch = level.gameTime,
+                surviving = true,
+                sourcePlayerInternal = player.uuid,
+                kind = kind,
+                support = surface?.support,
+            ),
+        )
     }
 
     fun onPlayerDeath(player: ServerPlayer, cause: String) {
         val level = player.serverLevel()
         val death = player.position()
+        val levelId = level.dimension().location().toString()
+        val heldDowned = downedDeathCaptures.remove(player.uuid)
+        val downed = heldDowned?.takeIf { it.dimension == levelId }
+        val captureUnavailable = unavailableDownedCaptures.remove(player.uuid) || heldDowned != null && downed == null
+        val echoPosition = downed?.position ?: death
+        val echoCreatedAt = downed?.createdAt ?: level.gameTime
         val poolPosition = bloodPoolPosition(level, death)
         val pool = BloodPoolRecord(
             id = UUID.randomUUID(),
@@ -171,18 +283,23 @@ class TraceServerRuntime(val server: MinecraftServer) {
         data.addPool(pool, config.maxBloodPools.get())
 
         pendingDeathCaptures.entries.removeIf { it.value.playerId == player.uuid }
+        if (captureUnavailable) {
+            log.info("TRACES_DEATH_ECHO_SKIPPED player={} reason=pre_down_capture_unavailable", player.scoreboardName)
+            return
+        }
         val nonce = UUID.randomUUID()
         pendingDeathCaptures[nonce] = PendingDeathCapture(
             playerId = player.uuid,
-            dimension = level.dimension().location().toString(),
+            dimension = levelId,
             bloodPoolId = pool.id,
-            deathPosition = death,
-            createdAt = level.gameTime,
+            echoPosition = echoPosition,
+            createdAt = echoCreatedAt,
+            captureToken = downed?.token,
             expiresAtServerTick = server.tickCount + DEATH_CAPTURE_TIMEOUT_TICKS,
         )
         TracesNetwork.requestDeathEcho(
             player,
-            DeathCaptureRequestPacket(nonce, death.x, death.y, death.z),
+            DeathCaptureRequestPacket(nonce, echoPosition.x, echoPosition.y, echoPosition.z, downed?.token),
         )
         log.info(
             "TRACES_DEATH_POOL player={} pool={} cause={} position={},{},{}",
@@ -203,9 +320,9 @@ class TraceServerRuntime(val server: MinecraftServer) {
             bloodPoolId = pending.bloodPoolId,
             ownerId = player.uuid,
             ownerName = player.scoreboardName.take(16),
-            x = pending.deathPosition.x,
-            y = pending.deathPosition.y,
-            z = pending.deathPosition.z,
+            x = pending.echoPosition.x,
+            y = pending.echoPosition.y,
+            z = pending.echoPosition.z,
             createdAt = pending.createdAt,
             encodedClip = packet.encodedClip.copyOf(),
         )
@@ -280,13 +397,15 @@ class TraceServerRuntime(val server: MinecraftServer) {
             }
         }
         points.forEachIndexed { index, (pos, facingYaw) ->
+            val surface = TraceSupportResolver.resolve(level, pos, LIFECYCLE_SUPPORT_DEPTH)
+                ?: throw IllegalStateException("visual trace fixture has no supporting block at $pos")
             store.addFootTrace(
                 FootTrace(
                     id = UUID.nameUUIDFromBytes("traces-visual-v12-$index".toByteArray()),
                     levelKey = level.dimension().location().toString(),
-                    x = pos.x,
-                    y = pos.y,
-                    z = pos.z,
+                    x = surface.position.x,
+                    y = surface.position.y,
+                    z = surface.position.z,
                     facingYaw = facingYaw,
                     movementClass = MovementClass.WALK,
                     strength = 1.0f,
@@ -296,6 +415,7 @@ class TraceServerRuntime(val server: MinecraftServer) {
                     sequenceEpoch = level.gameTime,
                     surviving = true,
                     sourcePlayerInternal = player.uuid,
+                    support = surface.support,
                 ),
             )
         }
@@ -449,12 +569,27 @@ class TraceServerRuntime(val server: MinecraftServer) {
         val playerId: UUID,
         val dimension: String,
         val bloodPoolId: UUID,
-        val deathPosition: Vec3,
+        val echoPosition: Vec3,
         val createdAt: Long,
+        val captureToken: UUID?,
         val expiresAtServerTick: Int,
+    )
+
+    data class DownedDeathCapture(
+        val token: UUID,
+        val dimension: String,
+        val position: Vec3,
+        val createdAt: Long,
+    )
+
+    private data class PlayerLocation(
+        val dimension: String,
+        val position: Vec3,
+        val yaw: Float,
     )
 
     companion object {
         private const val DEATH_CAPTURE_TIMEOUT_TICKS = 100
+        private const val LIFECYCLE_SUPPORT_DEPTH = 8
     }
 }

@@ -22,19 +22,18 @@ class ErosionService(
             processRainQueue(level)
         }
 
-        if (tick % 200 == 0) {
-            storage.tickFlush()
-        }
         if (tick % 20 == 0) {
             storage.tickFlush()
         }
     }
 
     fun onFluidTick(blockPos: BlockPos) {
+        storage.removeBySupport(blockPos)
         storage.removeByPosition(blockPos)
         for (dx in -1..1) {
             for (dz in -1..1) {
                 val p = BlockPos(blockPos.x + dx, blockPos.y, blockPos.z + dz)
+                storage.removeBySupport(p)
                 storage.removeByPosition(p)
             }
         }

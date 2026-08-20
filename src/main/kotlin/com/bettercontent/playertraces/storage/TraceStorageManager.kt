@@ -3,6 +3,7 @@ package com.bettercontent.playertraces.storage
 import com.bettercontent.playertraces.config.TracesConfig
 import com.bettercontent.playertraces.domain.FootTrace
 import com.bettercontent.playertraces.domain.TraceAnnotation
+import com.bettercontent.playertraces.domain.TraceSupport
 import com.bettercontent.playertraces.util.Geometry
 import com.bettercontent.playertraces.util.TraceShardId
 import net.minecraft.core.BlockPos
@@ -181,6 +182,29 @@ class TraceStorageManager(
         return out
     }
 
+    fun tileRevision(chunkX: Int, chunkZ: Int): Long {
+        val id = shardIdForChunk(chunkX, chunkZ)
+        return loadShard(id).tileRevision(chunkX, chunkZ)
+    }
+
+    fun queryTraceTile(chunkX: Int, chunkZ: Int): List<FootTrace> {
+        val id = shardIdForChunk(chunkX, chunkZ)
+        return loadShard(id).queryTraceTile(chunkX, chunkZ).filter { it.levelKey == levelKey }
+    }
+
+    fun traceTileSnapshot(chunkX: Int, chunkZ: Int): TraceTileSnapshot {
+        val id = shardIdForChunk(chunkX, chunkZ)
+        val snapshot = loadShard(id).traceTileSnapshot(chunkX, chunkZ)
+        return snapshot.copy(traces = snapshot.traces.filter { it.levelKey == levelKey })
+    }
+
+    fun pruneInvalidSupports(chunkX: Int, chunkZ: Int, isValid: (TraceSupport) -> Boolean): Int {
+        val id = shardIdForChunk(chunkX, chunkZ)
+        val removed = loadShard(id).pruneInvalidSupports(chunkX, chunkZ, isValid)
+        if (removed > 0) markDirty(id)
+        return removed
+    }
+
     fun queryAnnotations(boundsMin: BlockPos, boundsMax: BlockPos): List<TraceAnnotation> {
         val (minSX, minSZ) = Geometry.worldToShard(boundsMin)
         val (maxSX, maxSZ) = Geometry.worldToShard(boundsMax)
@@ -197,13 +221,13 @@ class TraceStorageManager(
     fun addFootTrace(trace: FootTrace) {
         check(!closed) { "Traces storage is closed" }
         require(trace.levelKey == levelKey) { "trace belongs to ${trace.levelKey}, expected $levelKey" }
+        require(trace.kind != com.bettercontent.playertraces.domain.TraceKind.FOOTPRINT || trace.support != null) {
+            "footprint trace has no supporting block"
+        }
         val (sx, sz) = Geometry.worldToShard(trace.blockPos)
         val id = TraceShardId(worldDimensionPath(), sx, sz)
         val shard = loadShard(id)
-        synchronized(shard) {
-            shard.footTraces += trace
-            shard.markDirty()
-        }
+        shard.addFootTrace(trace)
         markDirty(id)
     }
 
@@ -284,6 +308,15 @@ class TraceStorageManager(
                 if (state.dirty) markDirty(id)
             }
         }
+    }
+
+    fun removeBySupport(pos: BlockPos): Int {
+        val (sx, sz) = Geometry.worldToShard(pos)
+        val id = TraceShardId(worldDimensionPath(), sx, sz)
+        val state = loadShard(id)
+        val removed = state.removeBySupport(pos)
+        if (removed > 0) markDirty(id)
+        return removed
     }
 
     fun removeFootTraces(boundsMin: BlockPos, boundsMax: BlockPos): Int {
@@ -371,6 +404,12 @@ class TraceStorageManager(
     private fun markDirty(id: TraceShardId) {
         val shard = cache.get(id) ?: return
         shard.markDirty()
+    }
+
+    private fun shardIdForChunk(chunkX: Int, chunkZ: Int): TraceShardId {
+        val block = BlockPos(chunkX * 16, 0, chunkZ * 16)
+        val (sx, sz) = Geometry.worldToShard(block)
+        return TraceShardId(worldDimensionPath(), sx, sz)
     }
 
     private fun flush(id: TraceShardId) {
