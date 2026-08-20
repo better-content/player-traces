@@ -2,6 +2,7 @@ package com.bettercontent.playertraces.client
 
 import net.minecraft.client.renderer.RenderType
 import net.minecraft.resources.ResourceLocation
+import com.bettercontent.playertraces.domain.TraceKind
 
 object TracesRenderTypes {
     private val footprintTexture = ResourceLocation.fromNamespaceAndPath("player_traces", "textures/effect/leg_contact.png")
@@ -9,6 +10,18 @@ object TracesRenderTypes {
     private val bloodPoolTexture = ResourceLocation.fromNamespaceAndPath("player_traces", "textures/effect/blood_pool.png")
 
     val footprints: RenderType = RenderType.entityTranslucent(footprintTexture)
+    private val arrival: RenderType = RenderType.entityTranslucent(
+        ResourceLocation.fromNamespaceAndPath("player_traces", "textures/effect/icon_pin.png"),
+    )
+    private val departure: RenderType = RenderType.entityTranslucent(
+        ResourceLocation.fromNamespaceAndPath("player_traces", "textures/effect/icon_direction.png"),
+    )
+    fun trace(kind: TraceKind): RenderType = when (kind) {
+        TraceKind.FOOTPRINT -> footprints
+        TraceKind.ARRIVAL -> arrival
+        TraceKind.DEPARTURE -> departure
+    }
+    val traceTypes: Set<RenderType> = setOf(footprints, arrival, departure)
     private val noteTypes = com.bettercontent.playertraces.domain.AnnotationComponents.icons.associateWith { icon ->
         RenderType.entityTranslucent(ResourceLocation.fromNamespaceAndPath("player_traces", "textures/effect/icon_$icon.png"))
     }

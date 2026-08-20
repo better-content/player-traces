@@ -79,7 +79,7 @@ object TracesClientRenderer {
         val bloodPools = TracesClientState.visibleBloodPools()
         val deathEchoes = TracesClientState.visibleDeathEchoes()
         val noteEchoes = TracesClientState.playingAnnotationEchoes(player.position(), nowMillis, traceSightVisible = true)
-        if (footprintData.sparse.isEmpty() && footprintData.dense.isEmpty() && annotations.isEmpty() && guidance.isEmpty() && bloodPools.isEmpty() && deathEchoes.isEmpty() && noteEchoes.isEmpty()) return
+        if (footprintData.cells.isEmpty() && annotations.isEmpty() && guidance.isEmpty() && bloodPools.isEmpty() && deathEchoes.isEmpty() && noteEchoes.isEmpty()) return
 
         val pose = event.poseStack
         pose.pushPose()
@@ -106,26 +106,22 @@ object TracesClientRenderer {
             guidanceSegments.values.forEach { segment ->
                 emitGuidanceSegment(guidanceConsumer, pose.last().pose(), segment, animationSeconds, traceVisibility)
             }
-            val drawableFootprints = footprintData.sparse.mapNotNull { cached ->
-                if (camera.position.distanceToSqr(cached.bounds.center) > distance * distance || !event.frustum.isVisible(cached.bounds)) return@mapNotNull null
-                drawable++
-                submitted++
-                cached
+            footprintData.cells.forEach cellLoop@{ cell ->
+                val cellDistance = distance + FootprintRenderCache.CELL_SIZE_BLOCKS
+                if (camera.position.distanceToSqr(cell.bounds.center) > cellDistance * cellDistance ||
+                    !event.frustum.isVisible(cell.bounds)
+                ) return@cellLoop
+                cell.footprints.forEach footprintLoop@{ cached ->
+                    if (camera.position.distanceToSqr(cached.bounds.center) > distance * distance) return@footprintLoop
+                    emitQuad(
+                        buffer.getBuffer(TracesRenderTypes.trace(cached.mark.trace.kind)), pose.last().pose(), cached.quad,
+                        TraceSightOverlayModel.scaledAlpha(cached.mark.alpha, traceVisibility), cached.mark.color, FULL_BRIGHT,
+                    )
+                    drawable++
+                    submitted++
+                }
             }
-            drawableFootprints.forEach { cached ->
-                emitQuad(
-                    buffer.getBuffer(TracesRenderTypes.footprints), pose.last().pose(), cached.quad,
-                    TraceSightOverlayModel.scaledAlpha(cached.mark.alpha, traceVisibility), cached.mark.color, FULL_BRIGHT,
-                )
-            }
-            buffer.endBatch(TracesRenderTypes.footprints)
-            footprintData.dense.forEach { decal ->
-                if (camera.position.distanceToSqr(decal.bounds.center) > distance * distance || !event.frustum.isVisible(decal.bounds)) return@forEach
-                emitQuad(buffer.getBuffer(decal.renderType), pose.last().pose(), decal.quad, 0.50f * traceVisibility, 0x35E7FF, FULL_BRIGHT)
-                drawable += decal.sourceCount
-                submitted++
-            }
-            footprintData.dense.map { it.renderType }.distinct().forEach(buffer::endBatch)
+            TracesRenderTypes.traceTypes.forEach(buffer::endBatch)
             annotations.forEach { annotation ->
                 val pos = BlockPos(annotation.x, annotation.y, annotation.z)
                 if (!visible(pos, camera, event, distance)) return@forEach

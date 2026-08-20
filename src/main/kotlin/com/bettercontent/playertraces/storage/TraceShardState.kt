@@ -3,16 +3,19 @@ package com.bettercontent.playertraces.storage
 import com.bettercontent.playertraces.domain.TraceAnnotation
 import com.bettercontent.playertraces.domain.FootTrace
 import com.bettercontent.playertraces.domain.GLOBAL_TEAM
+import com.bettercontent.playertraces.domain.TraceKind
 import net.minecraft.core.BlockPos
 
 class TraceShardState {
     internal val footTraces: MutableList<FootTrace> = mutableListOf()
     internal val annotations: MutableList<TraceAnnotation> = mutableListOf()
     internal val seenStates: MutableList<SeenStateRecord> = mutableListOf()
+    private val tileRevisions: MutableMap<TraceTileId, Long> = mutableMapOf()
     @Volatile
     var dirty: Boolean = false
         private set
     private var generation: Long = 0
+    private var nextTileRevision: Long = 1
 
     @Synchronized
     fun markDirty() {
@@ -26,6 +29,8 @@ class TraceShardState {
         copy.footTraces.addAll(footTraces)
         copy.annotations.addAll(annotations)
         copy.seenStates.addAll(seenStates)
+        copy.tileRevisions.putAll(tileRevisions)
+        copy.nextTileRevision = nextTileRevision
         return copy to generation
     }
 
@@ -36,6 +41,45 @@ class TraceShardState {
 
     @Synchronized
     fun footTracesSnapshot(): List<FootTrace> = footTraces.toList()
+
+    @Synchronized
+    internal fun addLoadedFootTrace(trace: FootTrace) {
+        footTraces += trace
+        tileRevisions.putIfAbsent(TraceTileId.containing(trace.blockPos), nextTileRevision++)
+    }
+
+    @Synchronized
+    internal fun replaceLoadedTileRevisions(revisions: Map<TraceTileId, Long>) {
+        tileRevisions.clear()
+        tileRevisions.putAll(revisions)
+        nextTileRevision = (revisions.values.maxOrNull() ?: 0L) + 1L
+    }
+
+    @Synchronized
+    internal fun tileRevisionsSnapshot(): Map<TraceTileId, Long> = tileRevisions.toMap()
+
+    @Synchronized
+    fun addFootTrace(trace: FootTrace) {
+        require(trace.kind != TraceKind.FOOTPRINT || trace.support != null) { "footprint trace has no supporting block" }
+        footTraces += trace
+        markTraceTilesDirty(setOf(TraceTileId.containing(trace.blockPos)))
+    }
+
+    @Synchronized
+    fun tileRevision(chunkX: Int, chunkZ: Int): Long = tileRevisions[TraceTileId(chunkX, chunkZ)] ?: 0L
+
+    @Synchronized
+    fun queryTraceTile(chunkX: Int, chunkZ: Int): List<FootTrace> {
+        val tile = TraceTileId(chunkX, chunkZ)
+        return footTraces.filter { it.surviving && TraceTileId.containing(it.blockPos) == tile }
+    }
+
+    @Synchronized
+    fun traceTileSnapshot(chunkX: Int, chunkZ: Int): TraceTileSnapshot = TraceTileSnapshot(
+        TraceTileId(chunkX, chunkZ),
+        tileRevision(chunkX, chunkZ),
+        queryTraceTile(chunkX, chunkZ),
+    )
 
     @Synchronized
     fun annotationsSnapshot(): List<TraceAnnotation> = annotations.toList()
@@ -64,26 +108,32 @@ class TraceShardState {
 
     @Synchronized
     fun removeAtPosition(position: BlockPos) {
-        val before = footTraces.size
-        footTraces.removeIf { it.blockPos.x == position.x && it.blockPos.y == position.y && it.blockPos.z == position.z }
-        if (footTraces.size != before) markDirty()
+        removeMatching { it.blockPos == position }
+    }
+
+    @Synchronized
+    fun removeBySupport(position: BlockPos): Int = removeMatching { it.support?.position == position }
+
+    @Synchronized
+    fun pruneInvalidSupports(chunkX: Int, chunkZ: Int, isValid: (com.bettercontent.playertraces.domain.TraceSupport) -> Boolean): Int {
+        val tile = TraceTileId(chunkX, chunkZ)
+        return removeMatching { trace ->
+            TraceTileId.containing(trace.blockPos) == tile && trace.support?.let { !isValid(it) } == true
+        }
     }
 
     @Synchronized
     fun removeFootTraces(boundsMin: BlockPos, boundsMax: BlockPos): Int {
-        val before = footTraces.size
-        footTraces.removeIf { trace ->
+        return removeMatching { trace ->
             val pos = trace.blockPos
             pos.x in boundsMin.x..boundsMax.x && pos.y in boundsMin.y..boundsMax.y && pos.z in boundsMin.z..boundsMax.z
         }
-        val removed = before - footTraces.size
-        if (removed > 0) markDirty()
-        return removed
     }
 
     @Synchronized
     fun updateWeakness(position: BlockPos, factor: Double) {
         var changed = false
+        val changedTiles = mutableSetOf<TraceTileId>()
         for (i in footTraces.indices) {
             val trace = footTraces[i]
             val p = trace.blockPos
@@ -95,13 +145,15 @@ class TraceShardState {
                 if (trace.surviving) {
                     footTraces[i] = trace.copy(surviving = false)
                     changed = true
+                    changedTiles += TraceTileId.containing(trace.blockPos)
                 }
             } else {
                 footTraces[i] = trace.copy(strength = next)
                 changed = true
+                changedTiles += TraceTileId.containing(trace.blockPos)
             }
         }
-        if (changed) markDirty()
+        if (changed) markTraceTilesDirty(changedTiles)
     }
 
     @Synchronized
@@ -134,5 +186,22 @@ class TraceShardState {
         annotations[index] = updated
         markDirty()
         return updated
+    }
+
+    private fun removeMatching(predicate: (FootTrace) -> Boolean): Int {
+        val matches = footTraces.asSequence()
+            .filter(predicate)
+            .toList()
+        if (matches.isEmpty()) return 0
+        val ids = matches.mapTo(HashSet()) { it.id }
+        footTraces.removeIf { it.id in ids }
+        markTraceTilesDirty(matches.mapTo(mutableSetOf()) { TraceTileId.containing(it.blockPos) })
+        return matches.size
+    }
+
+    private fun markTraceTilesDirty(tiles: Set<TraceTileId>) {
+        if (tiles.isEmpty()) return
+        tiles.forEach { tileRevisions[it] = nextTileRevision++ }
+        markDirty()
     }
 }

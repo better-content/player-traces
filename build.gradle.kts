@@ -238,7 +238,8 @@ tasks {
                 guidanceStrengthFloor = 0.03
                 referenceDensity = 8.0
                 minVisibleAlpha = 0.07
-                maxRenderDistance = 6
+                maxRenderDistance = 16
+                recencyWindowMinutes = 20
                 guidancePulseSpeed = 0.08
                 annotationLabelDistance = 32
                 visualDiagnostics = true
@@ -250,7 +251,7 @@ tasks {
                 shardCacheSize = 128
                 referenceDensity = 8.0
                 minVisibleAlpha = 0.07
-                maxRenderDistance = 6
+                maxRenderDistance = 32
                 rainExposureFactor = 0.91
                 devVisualFixture = true
                 maxPayloadTraces = 4096

@@ -12,6 +12,11 @@ import com.bettercontent.playertraces.echo.EchoClipCodec
 
 object TracesClientState {
     private val traces = mutableListOf<VisibleTraceDto>()
+    private val traceTiles = mutableMapOf<TraceTileKey, CompletedTraceTile>()
+    private val pendingTraceTiles = mutableMapOf<TraceTileKey, PendingTraceTile>()
+    private var traceTileMode = false
+    private var traceGeneration = Long.MIN_VALUE
+    private var traceDimension = ""
     private val annotations = mutableListOf<VisibleAnnotationDto>()
     private val guidanceRoutes = mutableListOf<GuidanceRouteDto>()
     private val bloodPools = mutableListOf<VisibleBloodPoolDto>()
@@ -44,6 +49,94 @@ object TracesClientState {
     @Volatile
     var footprintPayloadRevision: Long = 0
 
+    @Volatile
+    var sessionLoginGameTime: Long = 0L
+
+    fun beginTraceSubscription(generation: Long, dimension: String, loginGameTime: Long) {
+        if (generation < traceGeneration) return
+        if (generation > traceGeneration) {
+            pendingTraceTiles.clear()
+            if (traceGeneration != Long.MIN_VALUE) {
+                traceTiles.clear()
+                FootprintRenderCache.clear()
+                footprintPayloadRevision++
+            }
+            traceGeneration = generation
+        }
+        traceDimension = dimension
+        sessionLoginGameTime = loginGameTime
+        traceTileMode = true
+        lastPayloadTraceCount = traceTiles.values.sumOf { it.traces.size }
+    }
+
+    fun acceptTraceTilePage(
+        generation: Long,
+        dimension: String,
+        key: TraceTileKey,
+        revision: Long,
+        pageIndex: Int,
+        pageCount: Int,
+        pageTraces: List<VisibleTraceDto>,
+    ): Boolean {
+        if (pageCount !in 1..MAX_TILE_PAGES || pageIndex !in 0 until pageCount || revision < 0L) return false
+        if (generation < traceGeneration) return false
+        if (generation > traceGeneration || dimension != traceDimension) {
+            beginTraceSubscription(generation, dimension, sessionLoginGameTime)
+        }
+        if (generation != traceGeneration || dimension != traceDimension) return false
+        val current = traceTiles[key]
+        if (current != null && revision < current.revision) return false
+        if (current != null && revision == current.revision) return true
+        var pending = pendingTraceTiles[key]
+        if (pending == null || revision > pending.revision || pageCount != pending.pageCount) {
+            pending = PendingTraceTile(revision, pageCount)
+            pendingTraceTiles[key] = pending
+        } else if (revision < pending.revision) {
+            return false
+        }
+        pending.pages[pageIndex] = pageTraces.toList()
+        if (pending.pages.size != pending.pageCount) return false
+        val replacement = (0 until pending.pageCount).flatMap { pending.pages.getValue(it) }
+        pendingTraceTiles.remove(key)
+        val next = CompletedTraceTile(revision, replacement)
+        if (current != next) {
+            traceTiles[key] = next
+            FootprintRenderCache.invalidateCell(key.chunkX, key.chunkZ)
+            footprintPayloadRevision++
+            lastPayloadTraceCount = traceTiles.values.sumOf { it.traces.size }
+        }
+        return true
+    }
+
+    fun evictTraceTiles(generation: Long, dimension: String, keys: Collection<TraceTileKey>) {
+        if (generation != traceGeneration || dimension != traceDimension || keys.isEmpty()) return
+        var changed = false
+        keys.forEach { key ->
+            pendingTraceTiles.remove(key)
+            if (traceTiles.remove(key) != null) {
+                FootprintRenderCache.invalidateCell(key.chunkX, key.chunkZ)
+                changed = true
+            }
+        }
+        if (changed) {
+            footprintPayloadRevision++
+            lastPayloadTraceCount = traceTiles.values.sumOf { it.traces.size }
+        }
+    }
+
+    fun clearTraceTiles() {
+        traces.clear()
+        traceTiles.clear()
+        pendingTraceTiles.clear()
+        traceTileMode = false
+        traceGeneration = Long.MIN_VALUE
+        traceDimension = ""
+        sessionLoginGameTime = 0L
+        lastPayloadTraceCount = 0
+        footprintPayloadRevision++
+        FootprintRenderCache.clear()
+    }
+
     fun acceptNetworkPayload(payload: com.bettercontent.playertraces.network.TraceQueryResponsePacket) {
         if (traces != payload.traces) {
             traces.clear()
@@ -75,20 +168,24 @@ object TracesClientState {
                 .getOrNull()
         })
         lastUnseenAnnotationCount = annotations.count { !it.seen }
-        lastPayloadTraceCount = traces.size
+        lastPayloadTraceCount = visibleTraces().size
         lastPayloadAnnotationCount = annotations.size
         lastPayloadAtMillis = System.currentTimeMillis()
         hasResponse = true
         if (TracesConfig.client.visualDiagnostics.get()) {
             TracesClientLog.LOGGER.info(
                 "TRACES_MVP_ACCEPTED accepted={} footprints={} notes={}",
-                traces.size + annotations.size, traces.size, annotations.size,
+                visibleTraces().size + annotations.size, visibleTraces().size, annotations.size,
             )
             TracesClientLog.LOGGER.info("TRACES_ANNOTATION_ECHO_CACHE advertised={} cached={}", advertised.size, annotationEchoes.size)
         }
     }
 
-    fun visibleTraces(): List<VisibleTraceDto> = traces.toList()
+    fun visibleTraces(): List<VisibleTraceDto> = if (traceTileMode) {
+        traceTiles.toSortedMap().values.flatMap { it.traces }
+    } else {
+        traces.toList()
+    }
     fun visibleAnnotations(): List<VisibleAnnotationDto> = annotations.toList()
     fun visibleGuidance(): List<GuidanceRouteDto> = guidanceRoutes.toList()
     fun visibleBloodPools(): List<VisibleBloodPoolDto> = bloodPools.toList()
@@ -179,3 +276,13 @@ object TracesClientState {
 data class ClientDeathEcho(val dto: VisibleDeathEchoDto, val clip: EchoClip)
 data class ClientAnnotationEcho(val dto: VisibleAnnotationDto, val clip: EchoClip, val startedAt: Long)
 private data class ActiveAnnotationEcho(val clip: EchoClip, val startedAt: Long)
+data class TraceTileKey(val chunkX: Int, val chunkZ: Int) : Comparable<TraceTileKey> {
+    override fun compareTo(other: TraceTileKey): Int = compareValuesBy(this, other, TraceTileKey::chunkX, TraceTileKey::chunkZ)
+}
+private data class CompletedTraceTile(val revision: Long, val traces: List<VisibleTraceDto>)
+private data class PendingTraceTile(
+    val revision: Long,
+    val pageCount: Int,
+    val pages: MutableMap<Int, List<VisibleTraceDto>> = mutableMapOf(),
+)
+private const val MAX_TILE_PAGES = 4_096

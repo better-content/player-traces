@@ -18,6 +18,8 @@ data class FootTrace(
     val sequenceEpoch: Long,
     val surviving: Boolean,
     val sourcePlayerInternal: UUID,
+    val kind: TraceKind = TraceKind.FOOTPRINT,
+    val support: TraceSupport? = null,
 ) {
     val blockPos: BlockPos
         get() = BlockPos.containing(x, y, z)
@@ -25,9 +27,10 @@ data class FootTrace(
     constructor(
         id: UUID, levelKey: String, blockPos: BlockPos, movementClass: MovementClass, strength: Float,
         sequenceId: UUID, sequenceIndex: Int, createdAt: Long, sequenceEpoch: Long, surviving: Boolean,
-        sourcePlayerInternal: UUID,
+        sourcePlayerInternal: UUID, kind: TraceKind = TraceKind.FOOTPRINT, support: TraceSupport? = null,
     ) : this(
         id, levelKey, blockPos.x + 0.5, blockPos.y.toDouble(), blockPos.z + 0.5, 0f,
         movementClass, strength, sequenceId, sequenceIndex, createdAt, sequenceEpoch, surviving, sourcePlayerInternal,
+        kind, support,
     )
 }

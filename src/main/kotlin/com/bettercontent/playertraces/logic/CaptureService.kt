@@ -99,11 +99,13 @@ class CaptureService(
         points += sampled.points
         state.distanceSinceEmission = sampled.distanceSinceEmission
         val yaw = player.yRot.takeIf { it.isFinite() } ?: 0f
-        points.forEach { point -> storage.addFootTrace(
-            FootTrace(
+        var emitted = 0
+        points.forEach { point ->
+            val surface = TraceSupportResolver.resolve(level, point, FOOTPRINT_SUPPORT_DEPTH) ?: return@forEach
+            storage.addFootTrace(FootTrace(
                 id = UUID.randomUUID(),
                 levelKey = level.dimension().location().toString(),
-                x = point.x, y = point.y, z = point.z,
+                x = surface.position.x, y = surface.position.y, z = surface.position.z,
                 facingYaw = yaw,
                 movementClass = movement,
                 strength = strength,
@@ -112,13 +114,15 @@ class CaptureService(
                 createdAt = now,
                 sequenceEpoch = now,
                 surviving = true,
-                sourcePlayerInternal = player.uuid
-            )
-        ) }
+                sourcePlayerInternal = player.uuid,
+                support = surface.support,
+            ))
+            emitted++
+        }
 
         state.lastPos = nextPos
         state.onGround = onGround
-        return points.size
+        return emitted
     }
 
     private fun ServerPlayer.lastPosDelta(): Double {
@@ -134,6 +138,7 @@ class CaptureService(
     internal fun captureSpacing(@Suppress("UNUSED_PARAMETER") movementClass: MovementClass): Double = 0.75
 
     companion object {
+        private const val FOOTPRINT_SUPPORT_DEPTH = 3
         data class SamplingResult(val points: List<Vec3>, val distanceSinceEmission: Double)
 
         internal fun sampleSegment(start: Vec3, end: Vec3, carried: Double, spacing: Double = 0.75): SamplingResult {

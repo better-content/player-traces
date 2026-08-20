@@ -7,10 +7,10 @@ import net.minecraft.network.chat.Component
 import net.minecraftforge.api.distmarker.Dist
 import net.minecraftforge.client.event.InputEvent
 import net.minecraftforge.client.event.RegisterGuiOverlaysEvent
-import net.minecraftforge.client.event.RenderGuiOverlayEvent
 import net.minecraftforge.client.event.RegisterKeyMappingsEvent
 import net.minecraftforge.client.event.RenderLevelStageEvent
 import net.minecraftforge.event.TickEvent
+import net.minecraftforge.event.level.ChunkEvent
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent
 import net.minecraftforge.eventbus.api.SubscribeEvent
 import net.minecraftforge.fml.common.Mod
@@ -48,19 +48,6 @@ object TracesClientHandlers {
 
     @SubscribeEvent
     @JvmStatic
-    fun onRenderGuiOverlay(event: RenderGuiOverlayEvent.Pre) {
-        if (TraceSightOverlayModel.shouldHideHudOverlay(
-                event.overlay.id(),
-                TracesClientState.overlayEnabled,
-                TraceSightOverlayRenderer.visibility(),
-            )
-        ) {
-            event.isCanceled = true
-        }
-    }
-
-    @SubscribeEvent
-    @JvmStatic
     @Suppress("UNUSED_PARAMETER")
     fun onKeyInput(event: InputEvent.Key) {
         if (TracesClientConfig.revealToggle.consumeClick()) {
@@ -76,15 +63,24 @@ object TracesClientHandlers {
         if (TracesClientConfig.placeAnnotation.consumeClick()) {
             val mc = Minecraft.getInstance()
             if (mc.player != null && mc.screen == null) {
-                val hit = mc.hitResult as? net.minecraft.world.phys.BlockHitResult
-                if (hit != null && hit.type == net.minecraft.world.phys.HitResult.Type.BLOCK) {
+                val blockHit = (mc.hitResult as? net.minecraft.world.phys.BlockHitResult)
+                    ?.takeIf { it.type == net.minecraft.world.phys.HitResult.Type.BLOCK }
+                val targetedAnnotation = AnnotationTargeting.pick(
+                    mc.level ?: return,
+                    mc.player ?: return,
+                    TracesClientState.visibleAnnotations(),
+                    blockHit,
+                )
+                val target = targetedAnnotation?.let { net.minecraft.core.BlockPos(it.x, it.y, it.z) }
+                    ?: blockHit?.blockPos
+                if (target != null) {
                     val recent = runCatching { com.bettercontent.playertraces.client.death.DeathEchoRecorder.freezeRecentAnnotationClip() }
-                    val existing = TracesClientState.visibleAnnotations().firstOrNull {
-                        it.x == hit.blockPos.x && it.y == hit.blockPos.y && it.z == hit.blockPos.z
+                    val existing = targetedAnnotation ?: TracesClientState.visibleAnnotations().firstOrNull {
+                        it.x == target.x && it.y == target.y && it.z == target.z
                     }
                     if (existing == null || existing.canEdit) {
                         mc.setScreen(AnnotationEditScreen(
-                            hit.blockPos, existing, recent.getOrNull(), recent.exceptionOrNull()?.message.orEmpty(),
+                            target, existing, recent.getOrNull(), recent.exceptionOrNull()?.message.orEmpty(),
                             openingKeyCode = event.key,
                         ))
                     } else {
@@ -123,7 +119,14 @@ object TracesClientHandlers {
     @SubscribeEvent
     @JvmStatic
     fun onLogout(_event: ClientPlayerNetworkEvent.LoggingOut) {
-        FootprintRenderCache.clear()
+        TracesClientState.clearTraceTiles()
+    }
+
+    @SubscribeEvent
+    @JvmStatic
+    fun onChunkLoaded(event: ChunkEvent.Load) {
+        if (!event.level.isClientSide) return
+        FootprintRenderCache.invalidateCell(event.chunk.pos.x, event.chunk.pos.z)
     }
 
     internal fun queryIntervalTicks(overlayEnabled: Boolean): Int =

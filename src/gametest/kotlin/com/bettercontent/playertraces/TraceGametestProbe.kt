@@ -6,6 +6,7 @@ import com.bettercontent.playertraces.domain.FootTrace
 import com.bettercontent.playertraces.domain.MovementClass
 import com.bettercontent.playertraces.domain.AnnotationComponents
 import com.bettercontent.playertraces.domain.AnnotationEchoRecord
+import com.bettercontent.playertraces.domain.TraceSupport
 import com.bettercontent.playertraces.echo.EchoClip
 import com.bettercontent.playertraces.echo.EchoClipCodec
 import com.bettercontent.playertraces.echo.EchoEncoding
@@ -20,6 +21,7 @@ import net.minecraft.gametest.framework.GameTest
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.resources.ResourceLocation
 import net.minecraft.world.level.block.Blocks
 import net.minecraftforge.gametest.GameTestHolder
 import java.util.UUID
@@ -58,6 +60,7 @@ object TraceGametestProbe {
             sequenceEpoch = 1,
             surviving = true,
             sourcePlayerInternal = source,
+            support = TraceSupport(BlockPos(300, 63, 300), ResourceLocation("minecraft", "stone")),
         )
 
         val writer = TraceStorageManager(level, config)
@@ -100,6 +103,7 @@ object TraceGametestProbe {
             sequenceEpoch = 1,
             surviving = true,
             sourcePlayerInternal = UUID.randomUUID(),
+            support = TraceSupport(BlockPos(600, 63, 600), ResourceLocation("minecraft", "stone")),
         )
 
         try {
@@ -133,6 +137,7 @@ object TraceGametestProbe {
             sequenceEpoch = 1,
             surviving = true,
             sourcePlayerInternal = UUID.randomUUID(),
+            support = TraceSupport(BlockPos(900, 63, 900), ResourceLocation("minecraft", "stone")),
         )
 
         try {
@@ -172,6 +177,7 @@ object TraceGametestProbe {
             sequenceEpoch = 1,
             surviving = true,
             sourcePlayerInternal = UUID.randomUUID(),
+            support = TraceSupport(BlockPos(1200, 63, 1200), ResourceLocation("minecraft", "stone")),
         )
 
         val coverPos = BlockPos(trace.blockPos.x, trace.blockPos.y + 30, trace.blockPos.z)
