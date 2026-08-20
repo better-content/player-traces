@@ -26,7 +26,7 @@ object TracesClientRenderer {
     private const val LABEL_OUTLINE_RGB = 0x000000
     internal const val LABEL_SCALE = 0.021f
     internal const val LABEL_HEIGHT = 0.42
-    private const val MAX_LABELS = 8
+    private const val MAX_LABELS = 128
     internal const val GUIDANCE_COOL_RGB = 0x35E7FF
     internal const val GUIDANCE_WARM_RGB = 0xFF9F45
     internal const val GUIDANCE_BASE_ALPHA = 0.50f
