@@ -1,7 +1,6 @@
 package com.bettercontent.playertraces.events
 
 import com.bettercontent.playertraces.TracesMod
-import net.minecraft.network.chat.Component
 import net.minecraft.server.level.ServerPlayer
 import net.minecraftforge.event.TickEvent
 import net.minecraftforge.event.entity.player.PlayerEvent
@@ -16,6 +15,7 @@ import net.minecraftforge.event.level.BlockEvent
 import net.minecraftforge.event.level.ExplosionEvent
 import net.minecraftforge.event.level.PistonEvent
 import net.minecraftforge.eventbus.api.EventPriority
+import com.bettercontent.playertraces.api.ReturnSummaryApi
 object TracesForgeEvents {
     @SubscribeEvent
     fun onServerStarted(event: ServerStartedEvent) {
@@ -64,20 +64,6 @@ object TracesForgeEvents {
         if (com.bettercontent.playertraces.config.TracesConfig.common.devVisualFixture.get() || java.lang.Boolean.getBoolean("traces.visualValidation")) {
             runtime.seedVisualFixture(level, player)
         }
-        val guidance = runtime.guidance(level).query(player)
-        player.sendSystemMessage(Component.literal("Reveal Traces loaded. Press 'G' to toggle trace sight; aim at a block and press 'N' to place an annotation."))
-        if (guidance.totalReachable > 0) {
-            player.sendSystemMessage(Component.literal(
-                "${guidance.totalReachable} changed notes nearby; press G to reveal their trails."
-            ))
-        }
-        val radius = 96.0
-        val deathData = runtime.deathTraces(level)
-        val pools = deathData.poolsWithin(player.x - radius, player.x + radius, player.z - radius, player.z + radius).size
-        val echoes = deathData.echoesWithin(player.x - radius, player.x + radius, player.z - radius, player.z + radius).size
-        if (pools > 0 || echoes > 0) {
-            player.sendSystemMessage(Component.literal("$pools bloodstains and $echoes death echoes linger nearby."))
-        }
     }
 
     @SubscribeEvent
@@ -85,6 +71,7 @@ object TracesForgeEvents {
         val player = event.entity as? ServerPlayer ?: return
         val runtime = TracesMod.getRuntime(player.server)
         runtime.onPlayerLogout(player)
+        ReturnSummaryApi.recordLogout(player)
         TracesNetwork.onPlayerLogout(player)
     }
 

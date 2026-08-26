@@ -9,6 +9,8 @@ import net.minecraft.world.entity.player.Player
 import net.minecraft.world.level.Level
 import net.minecraft.server.level.ServerPlayer
 import java.util.UUID
+import com.bettercontent.playertraces.storage.AnnotationUpdateIndex
+import net.minecraft.server.level.ServerLevel
 
 class AnnotationService(private val storage: TraceStorageManager) : AnnotationApi, SeenStateService {
     override fun annotationsWithin(level: Level, boundsMin: BlockPos, boundsMax: BlockPos, viewer: Player?): AnnotationViewResult {
@@ -36,6 +38,7 @@ class AnnotationService(private val storage: TraceStorageManager) : AnnotationAp
             createdByInternal = viewer.getUUID()
         )
         storage.addAnnotation(record)
+        (level as? ServerLevel)?.let { AnnotationUpdateIndex.get(it).touch(record.id, it.gameTime) }
         return record
     }
 
@@ -47,7 +50,9 @@ class AnnotationService(private val storage: TraceStorageManager) : AnnotationAp
         requireTargetInReach(viewer, current.targetBlock)
         require(current.revision == expectedRevision) { "annotation changed; reopen it before saving" }
         validateAnnotationFields(text ?: current.text, icon ?: current.icon, color ?: current.color, false)
-        return storage.updateAnnotation(id, text, icon, color) ?: throw IllegalStateException("annotation update failed")
+        return (storage.updateAnnotation(id, text, icon, color) ?: throw IllegalStateException("annotation update failed")).also {
+            (level as? ServerLevel)?.let { serverLevel -> AnnotationUpdateIndex.get(serverLevel).touch(id, serverLevel.gameTime) }
+        }
     }
 
     fun createComponents(level: Level, viewer: Player, text: String, icon: String, color: Int, target: BlockPos, hasEcho: Boolean): TraceAnnotation {
@@ -58,7 +63,7 @@ class AnnotationService(private val storage: TraceStorageManager) : AnnotationAp
         }) { "you already have an annotation on this block" }
         return TraceAnnotation(
             UUID.randomUUID(), text, icon, color, target, target, GLOBAL_TEAM, 1, viewer.uuid,
-        ).also(storage::addAnnotation)
+        ).also(storage::addAnnotation).also { (level as? ServerLevel)?.let { serverLevel -> AnnotationUpdateIndex.get(serverLevel).touch(it.id, serverLevel.gameTime) } }
     }
 
     fun updateComponents(
@@ -76,7 +81,9 @@ class AnnotationService(private val storage: TraceStorageManager) : AnnotationAp
         requireTargetInReach(viewer, current.targetBlock)
         require(current.revision == expectedRevision) { "annotation changed; reopen it before saving" }
         validateAnnotationFields(text, icon, color, hasEchoAfterMutation)
-        return storage.updateAnnotation(id, text, icon, color) ?: throw IllegalStateException("annotation update failed")
+        return (storage.updateAnnotation(id, text, icon, color) ?: throw IllegalStateException("annotation update failed")).also {
+            (level as? ServerLevel)?.let { serverLevel -> AnnotationUpdateIndex.get(serverLevel).touch(id, serverLevel.gameTime) }
+        }
     }
 
     override fun delete(level: Level, viewer: Player, id: UUID, expectedRevision: Int): Boolean {
@@ -87,7 +94,9 @@ class AnnotationService(private val storage: TraceStorageManager) : AnnotationAp
         requireTargetInReach(viewer, current.targetBlock)
         require(current.revision == expectedRevision) { "annotation changed; reopen it before deleting" }
         storage.setSeen(viewer.getUUID(), id, current.revision)
-        return storage.removeAnnotation(id)
+        return storage.removeAnnotation(id).also { removed ->
+            if (removed) (level as? ServerLevel)?.let { AnnotationUpdateIndex.get(it).remove(id) }
+        }
     }
 
     override fun seenRevision(player: UUID, annotationId: UUID): Int = storage.getSeen(player, annotationId)
