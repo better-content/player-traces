@@ -58,7 +58,8 @@ Nearby changed-note guidance is server-authored and shown as bounded floating ro
 - GameTests target persistence/restart, water destruction, rain weakening, annotation persistence, global visibility, ownership, revision enforcement, and guidance invariants.
 - Dedicated-server smoke should confirm shard creation, restart-safe persistence, and malformed-shard fallback behavior.
 - `scripts/visual-validation/run.sh` launches an isolated headed Xvfb client and records deterministic overlay-off, overlay-on, connected-guidance, disconnected-guidance, GUI, and note-echo screenshots. Every image must be manually inspected before visual completion is claimed.
-- Set `tracesModCacheDir` to the directory containing the pinned Quark, Zeta, and Player Animator jars; `- `./gradlew verifyEchoPrototype` exercises` Player Animator with the exact Quark `4.0-462` / Zeta `1.0-31` distribution and writes compression/capture diagnostics to `build/echo-prototype-run/echo-prototype/latest-report.json`.
+- Set `tracesModCacheDir` to the directory containing the pinned Quark, Zeta, and Player Animator JARs.
+- `./gradlew verifyEchoPrototype` exercises Player Animator with the exact Quark `4.0-462` / Zeta `1.0-31` distribution and writes compression/capture diagnostics to `build/echo-prototype-run/echo-prototype/latest-report.json`.
 - Press `G` to toggle Trace Sight. Aim at a block and press `N` to create a note; aim at your existing note and press `N` to save changes or delete it. Gesture choices include the frozen recent three seconds and all Quark emotes available to that client.
 
 ## Architecture Notes
