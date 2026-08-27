@@ -32,7 +32,7 @@ object ThreadsBridge {
     fun forget(player:ServerPlayer){returns.remove(player.uuid)}
     private fun emit(player:ServerPlayer,type:String,value:String){
         try{
-            val api=Class.forName("com.bettercontent.bettercontentfixes.threads.ThreadSignals")
+            val api=Class.forName("com.bettercontent.threads.api.ThreadSignals")
             api.getMethod("emit",ServerPlayer::class.java,String::class.java,String::class.java).invoke(null,player,type,value)
         }catch(_:ClassNotFoundException){}catch(_:NoSuchMethodException){}catch(_:ReflectiveOperationException){}
     }
