@@ -1,9 +1,11 @@
 # Player Traces
 
-Traces is a server-authoritative Forge 1.20.1 mod that records grounded player footprints into compact shard files and renders nearby footprints, persistent notes, and animated player echoes.
+Traces is a server-authoritative Forge 1.20.1 mod that records grounded movement and lifecycle markers into compact shard files and renders nearby traces, persistent notes, and animated player echoes.
 
 ## What Traces Is
 - Captures foot traces from grounded player movement.
+- Marks login, logout, respawn, and both sides of dimension travel with anonymous arrival/departure symbols.
+- Anchors traces to the exact supporting block and removes them when that support disappears or changes.
 - Stores traces by world and region in chunk-sharded binary files.
 - Supports globally visible notes that their creator or a server operator can edit. A note may contain text, a colored icon, a gesture echo, or any combination of those components.
 - Records the three seconds before the note editor opens, or asks Quark to perform and records a selected emote after Save.
@@ -35,6 +37,7 @@ Nearby changed-note guidance is server-authored and shown as bounded floating ro
   - Header: magic + major/minor + shard bounds.
   - Blocks: foot traces, annotations, seen state, optional version marker.
   - Footer: CRC32 + record count.
+- Binary v3 stores trace kind, support identity, and persistent chunk-tile revisions. Loading v2 validates the complete shard, retains annotations and seen state, discards unanchored legacy footprints, and atomically rewrites v3 while retaining the prior file as a backup.
 - Unknown future major versions are refused and quarantined.
 - Unknown minor versions attempt safe best-effort parsing where compatible.
 - Legacy server-root `data/traces` directories are never imported automatically.
@@ -55,7 +58,8 @@ Nearby changed-note guidance is server-authored and shown as bounded floating ro
 - GameTests target persistence/restart, water destruction, rain weakening, annotation persistence, global visibility, ownership, revision enforcement, and guidance invariants.
 - Dedicated-server smoke should confirm shard creation, restart-safe persistence, and malformed-shard fallback behavior.
 - `scripts/visual-validation/run.sh` launches an isolated headed Xvfb client and records deterministic overlay-off, overlay-on, connected-guidance, disconnected-guidance, GUI, and note-echo screenshots. Every image must be manually inspected before visual completion is claimed.
-- Set `tracesModCacheDir` to the directory containing the pinned Quark, Zeta, and Player Animator jars; `- `./gradlew verifyEchoPrototype` exercises` Player Animator with the exact Quark `4.0-462` / Zeta `1.0-31` distribution and writes compression/capture diagnostics to `build/echo-prototype-run/echo-prototype/latest-report.json`.
+- Set `tracesModCacheDir` to the directory containing the pinned Quark, Zeta, and Player Animator JARs.
+- `./gradlew verifyEchoPrototype` exercises Player Animator with the exact Quark `4.0-462` / Zeta `1.0-31` distribution and writes compression/capture diagnostics to `build/echo-prototype-run/echo-prototype/latest-report.json`.
 - Press `G` to toggle Trace Sight. Aim at a block and press `N` to create a note; aim at your existing note and press `N` to save changes or delete it. Gesture choices include the frozen recent three seconds and all Quark emotes available to that client.
 
 ## Architecture Notes
@@ -70,7 +74,7 @@ Nearby changed-note guidance is server-authored and shown as bounded floating ro
 
 ### Client/Server Trust Boundary
 - Server validates all mutations and serves filtered render payloads.
-- Client performs local exposure sampling and rendering, and sends only nearby query requests.
+- Client subscribes to 16x16-block trace tiles and atomically replaces only complete revisions. The default radius is 16 chunks, the client and server maximum is 32, and the per-poll transfer budget does not cap the eventual visible footprint count.
 - Annotation mutations are correlated by request ID and acknowledged only after component, permission, reach, revision, capacity, and clip validation. The client retains and reopens the complete draft on failure.
 
 ### Note Echo Playback
@@ -81,8 +85,14 @@ Nearby changed-note guidance is server-authored and shown as bounded floating ro
 
 ### Rendering Compatibility
 - Traces renders only its footprint, guidance, pin, and label geometry into the active world target.
+- Footprints and lifecycle markers use the same stable 64x64-cell cache and canonical quad path, with distinct arrival/departure textures. Colors run violet-to-cyan before the viewer's latest login and cyan-to-amber afterward over a configurable 20-minute window.
 - Footprints and notes use vanilla depth-tested surface quads at `AFTER_PARTICLES` without changing world colors or compositing the viewport.
+- Trace Sight keeps its subtle dim/vignette but draws no cyan border and never suppresses vanilla or modded HUD overlays.
 - It does not copy, replace, desaturate, or composite the full world framebuffer.
+
+### Optional revival integration
+- When `downed_player_revival` is present, Traces listens to its public downed/revived events without a compile-time dependency.
+- Death footage is frozen strictly from frames before the down event and anchored at the down position. Revival discards it; a direct death continues to use the ordinary pre-death buffer.
 
 ## Canonical identity
 

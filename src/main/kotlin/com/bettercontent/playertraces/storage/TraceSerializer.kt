@@ -2,9 +2,12 @@ package com.bettercontent.playertraces.storage
 
 import com.bettercontent.playertraces.domain.FootTrace
 import com.bettercontent.playertraces.domain.MovementClass
+import com.bettercontent.playertraces.domain.TraceKind
+import com.bettercontent.playertraces.domain.TraceSupport
 import com.bettercontent.playertraces.domain.TraceAnnotation
 import com.bettercontent.playertraces.domain.TraceTeam
 import net.minecraft.core.BlockPos
+import net.minecraft.resources.ResourceLocation
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -21,13 +24,15 @@ import java.util.UUID
 import java.util.zip.CRC32
 
 private const val MAGIC = 0x54524143
-private const val MAJOR = 2
+private const val MAJOR = 3
 private const val MINOR = 0
+private const val MIGRATABLE_MAJOR = 2
 
 private const val FOOT_BLOCK = 1
 private const val ANNOTATION_BLOCK = 2
 private const val SEEN_BLOCK = 3
 private const val VERSION_BLOCK = 4
+private const val TILE_REVISION_BLOCK = 5
 
 private const val FOOTER_BYTES = 12
 private const val HEADER_EXTRA_INTS = 8
@@ -37,7 +42,9 @@ private const val MAX_SHARD_BYTES = 64L * 1024L * 1024L
 private const val MAX_FOOT_TRACES = 500_000
 private const val MAX_ANNOTATIONS = 16_384
 private const val MAX_SEEN_STATES = 1_000_000
+private const val MAX_TILE_REVISIONS = 256
 private const val MIN_RECORD_BYTES = 32
+private const val TILE_REVISION_BYTES = 16
 
 object TraceSerializer {
     private val log = LoggerFactory.getLogger(TraceSerializer::class.java)
@@ -87,8 +94,10 @@ object TraceSerializer {
                 if (input.readInt() != MAGIC) throw IllegalArgumentException("unexpected magic")
                 val major = input.readUnsignedShort()
                 val minor = input.readUnsignedShort()
-                if (major != MAJOR) {
-                    throw UnsupportedShardVersionException("unsupported major version $major; expected $MAJOR")
+                if (major != MAJOR && major != MIGRATABLE_MAJOR) {
+                    throw UnsupportedShardVersionException(
+                        "unsupported major version $major; expected $MAJOR or migratable $MIGRATABLE_MAJOR"
+                    )
                 }
                 repeat(HEADER_EXTRA_INTS) { input.readInt() }
                 log.debug(
@@ -104,6 +113,8 @@ object TraceSerializer {
                     // future minor versions: try best-effort parse of known blocks
                 }
 
+                var observedRecords = 0
+                var readTileRevisionBlock = false
                 while (input.available() > 0) {
                     val type = input.readUnsignedByte()
                     log.debug("Shard {} next block type {}", path, type)
@@ -111,29 +122,57 @@ object TraceSerializer {
                         FOOT_BLOCK -> {
                             val count = input.readInt()
                             requireCount("foot trace", count, MAX_FOOT_TRACES, input)
-                            repeat(count) { state.footTraces.add(readFootTrace(input)) }
+                            observedRecords += count
+                            if (major == MIGRATABLE_MAJOR) {
+                                repeat(count) { readFootTraceV2(input) }
+                            } else {
+                                repeat(count) { state.addLoadedFootTrace(readFootTraceV3(input)) }
+                            }
                         }
                         ANNOTATION_BLOCK -> {
                             val count = input.readInt()
                             requireCount("annotation", count, MAX_ANNOTATIONS, input)
+                            observedRecords += count
                             repeat(count) { state.annotations.add(readAnnotation(input)) }
                         }
                         SEEN_BLOCK -> {
                             val count = input.readInt()
                             requireCount("seen-state", count, MAX_SEEN_STATES, input)
+                            observedRecords += count
                             repeat(count) { state.seenStates.add(readSeenState(input)) }
                         }
                         VERSION_BLOCK -> {
                             input.readInt()
+                        }
+                        TILE_REVISION_BLOCK -> {
+                            require(major == MAJOR) { "tile revisions are not valid in shard version $major" }
+                            require(!readTileRevisionBlock) { "duplicate tile revision block" }
+                            readTileRevisionBlock = true
+                            val count = input.readInt()
+                            require(count in 0..MAX_TILE_REVISIONS) { "tile revision count $count exceeds limit $MAX_TILE_REVISIONS" }
+                            require(count <= input.available() / TILE_REVISION_BYTES) { "tile revision count $count exceeds remaining shard bytes" }
+                            val revisions = LinkedHashMap<TraceTileId, Long>(count)
+                            repeat(count) {
+                                val chunkX = input.readInt()
+                                val chunkZ = input.readInt()
+                                val revision = input.readLong()
+                                require(revision in 1 until Long.MAX_VALUE) { "invalid tile revision $revision" }
+                                val tile = TraceTileId(chunkX, chunkZ)
+                                require(revisions.put(tile, revision) == null) { "duplicate tile revision for $tile" }
+                            }
+                            state.replaceLoadedTileRevisions(revisions)
                         }
                         else -> {
                             throw IllegalArgumentException("unknown block type $type")
                         }
                     }
                 }
+                require(observedRecords == footerCount) {
+                    "footer record count $footerCount does not match $observedRecords"
+                }
+                require(major != MAJOR || readTileRevisionBlock) { "missing tile revision block" }
+                if (major == MIGRATABLE_MAJOR) state.markDirty()
             }
-            val observed = state.footTraces.size + state.annotations.size + state.seenStates.size
-            require(observed == footerCount) { "footer record count $footerCount does not match $observed" }
             return state
         } catch (unsupported: UnsupportedShardVersionException) {
             throw unsupported
@@ -143,6 +182,9 @@ object TraceSerializer {
     }
 
     fun write(path: Path, state: TraceShardState, bounds: Pair<BlockPos, BlockPos>) {
+        require(state.footTraces.none { it.kind == TraceKind.FOOTPRINT && it.support == null }) {
+            "footprint trace has no supporting block"
+        }
         val payload = ByteArrayOutputStream()
         DataOutputStream(payload).use { out ->
             out.writeInt(MAGIC)
@@ -160,6 +202,15 @@ object TraceSerializer {
             out.writeByte(FOOT_BLOCK)
             out.writeInt(state.footTraces.size)
             state.footTraces.forEach { writeFootTrace(out, it) }
+
+            out.writeByte(TILE_REVISION_BLOCK)
+            val tileRevisions = state.tileRevisionsSnapshot()
+            out.writeInt(tileRevisions.size)
+            tileRevisions.forEach { (tile, revision) ->
+                out.writeInt(tile.chunkX)
+                out.writeInt(tile.chunkZ)
+                out.writeLong(revision)
+            }
 
             out.writeByte(ANNOTATION_BLOCK)
             out.writeInt(state.annotations.size)
@@ -273,6 +324,14 @@ object TraceSerializer {
         output.writeBoolean(trace.surviving)
         output.writeLong(trace.sourcePlayerInternal.mostSignificantBits)
         output.writeLong(trace.sourcePlayerInternal.leastSignificantBits)
+        output.writeByte(trace.kind.serializedId)
+        output.writeBoolean(trace.support != null)
+        trace.support?.let { support ->
+            output.writeInt(support.position.x)
+            output.writeInt(support.position.y)
+            output.writeInt(support.position.z)
+            output.writeUTF(support.blockId.toString())
+        }
     }
 
     private fun writeAnnotation(output: DataOutputStream, annotation: TraceAnnotation) {
@@ -300,7 +359,25 @@ object TraceSerializer {
         output.writeInt(state.highestRevision)
     }
 
-    private fun readFootTrace(input: DataInputStream): FootTrace {
+    private fun readFootTraceV2(input: DataInputStream): FootTrace = readFootTraceBase(input)
+
+    private fun readFootTraceV3(input: DataInputStream): FootTrace {
+        val trace = readFootTraceBase(input)
+        val kind = TraceKind.fromSerializedId(input.readUnsignedByte())
+        val support = if (input.readBoolean()) {
+            val position = readBlockPos(input, "trace support")
+            val blockIdText = readUtf(input, 256, "support block id")
+            val blockId = ResourceLocation.tryParse(blockIdText)
+                ?: throw IllegalArgumentException("invalid support block id '$blockIdText'")
+            TraceSupport(position, blockId)
+        } else {
+            null
+        }
+        require(kind != TraceKind.FOOTPRINT || support != null) { "footprint trace has no supporting block" }
+        return trace.copy(kind = kind, support = support)
+    }
+
+    private fun readFootTraceBase(input: DataInputStream): FootTrace {
         val id = UUID.fromString(readUtf(input, 36, "trace id"))
         val levelKey = readUtf(input, 256, "level key")
         val x = input.readDouble()
@@ -323,6 +400,14 @@ object TraceSerializer {
         val surviving = input.readBoolean()
         val player = UUID(input.readLong(), input.readLong())
         return FootTrace(id, levelKey, x, y, z, facingYaw, movement, strength, sequence, sequenceIndex, createdAt, epoch, surviving, player)
+    }
+
+    private fun readBlockPos(input: DataInputStream, label: String): BlockPos {
+        val position = BlockPos(input.readInt(), input.readInt(), input.readInt())
+        require(kotlin.math.abs(position.x) <= 30_000_001 && kotlin.math.abs(position.z) <= 30_000_001 && position.y in -2048..2048) {
+            "$label exceeds world bounds"
+        }
+        return position
     }
 
     private fun readAnnotation(input: DataInputStream): TraceAnnotation {

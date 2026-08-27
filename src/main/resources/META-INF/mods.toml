@@ -8,23 +8,30 @@ displayName="Player Traces"
 authors="Better Content"
 description='''Server-authoritative player movement trace system with anonymous sharing and trace-guided wayfinding.''' 
 
-[[dependencies.traces]]
+[[dependencies.player_traces]]
 modId="forge"
 mandatory=true
 versionRange="[47.4.13,)"
 ordering="NONE"
 side="BOTH"
 
-[[dependencies.traces]]
+[[dependencies.player_traces]]
 modId="minecraft"
 mandatory=true
 versionRange="[1.20.1]"
 ordering="NONE"
 side="BOTH"
 
-[[dependencies.traces]]
+[[dependencies.player_traces]]
 modId="kotlinforforge"
 mandatory=true
 versionRange="[4.12.0,)"
 ordering="NONE"
+side="BOTH"
+
+[[dependencies.player_traces]]
+modId="downed_player_revival"
+mandatory=false
+versionRange="[0,)"
+ordering="AFTER"
 side="BOTH"

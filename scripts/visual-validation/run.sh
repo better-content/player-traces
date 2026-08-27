@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PACK_ROOT="${TRACES_REFERENCE_PACK:-$ROOT/../../better-content-modpack}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="$ROOT/build/visual-validation/$RUN_ID"
 HELPER="$ROOT/build/visual-helper"
@@ -78,7 +79,7 @@ fi
 
 if [[ "$SHADER_COMPAT" == "true" ]]; then
   SHADER_PACK="ComplementaryReimagined_r5.8.1.zip"
-  SHADER_SOURCE="$ROOT/../../../shaderpacks/$SHADER_PACK"
+  SHADER_SOURCE="$PACK_ROOT/shaderpacks/$SHADER_PACK"
   [[ -f "$SHADER_SOURCE" ]] || { echo "missing shader pack: $SHADER_SOURCE" >&2; exit 1; }
   mkdir -p "$ROOT/build/visual-run/shaderpacks" "$ROOT/build/visual-run/config"
   cp "$SHADER_SOURCE" "$ROOT/build/visual-run/shaderpacks/$SHADER_PACK"
