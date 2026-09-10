@@ -33,7 +33,7 @@ import net.minecraft.resources.ResourceKey
 import net.minecraft.world.level.Level
 import com.bettercontent.playertraces.logic.TraceSupportResolver
 import com.bettercontent.playertraces.compat.DownedPlayerRevivalBridge
-import com.bettercontent.playertraces.compat.ThreadsBridge
+import com.bettercontent.playertraces.trace.TraceEpisodes
 
 class TraceServerRuntime(val server: MinecraftServer) {
     private val log = LogUtils.getLogger()
@@ -94,8 +94,8 @@ class TraceServerRuntime(val server: MinecraftServer) {
     fun onPlayerTick(player: ServerPlayer) {
         val emitted=capture(player.serverLevel()).onPlayerTick(player)
         capturedCounter.addAndGet(emitted.toLong())
-        if(emitted>0)ThreadsBridge.traceCommitted(player)
-        ThreadsBridge.checkReturn(player,storage(player.serverLevel()))
+        if(emitted>0)TraceEpisodes.traceCommitted(player)
+        TraceEpisodes.checkReturn(player,storage(player.serverLevel()))
         remember(player)
     }
 

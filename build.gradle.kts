@@ -22,6 +22,7 @@ repositories {
     mavenCentral()
     maven("https://maven.minecraftforge.net")
     maven("https://thedarkcolour.github.io/KotlinForForge/")
+    maven("https://www.cursemaven.com") { content { includeGroup("curse.maven") } }
     providers.gradleProperty("tracesModCacheDir").orNull?.let { modCacheDir ->
         flatDir {
             dirs(file(modCacheDir))
@@ -37,6 +38,9 @@ repositories {
 dependencies {
     minecraft("net.minecraftforge:forge:${minecraftVersion}-${forgeVersion}")
     implementation("thedarkcolour:kotlinforforge:4.12.0")
+    compileOnly(files("../downed-player-revival/build/libs/downed-player-revival-1.0.0.jar"))
+    compileOnly(fg.deobf("curse.maven:quark-243121:6427817"))
+    compileOnly(fg.deobf("curse.maven:zeta-968868:7335229"))
     if (shaderCompatibilityValidation) {
         runtimeOnly(fg.deobf("shader.compat:embeddium:0.3.31+mc1.20.1"))
         runtimeOnly(fg.deobf("shader.compat:oculus-mc1.20.1:1.8.0"))

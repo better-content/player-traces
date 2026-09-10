@@ -16,7 +16,7 @@ import net.minecraftforge.event.level.ExplosionEvent
 import net.minecraftforge.event.level.PistonEvent
 import net.minecraftforge.eventbus.api.EventPriority
 import com.bettercontent.playertraces.api.ReturnSummaryApi
-import com.bettercontent.playertraces.compat.ThreadsBridge
+import com.bettercontent.playertraces.trace.TraceEpisodes
 object TracesForgeEvents {
     @SubscribeEvent
     fun onServerStarted(event: ServerStartedEvent) {
@@ -73,7 +73,7 @@ object TracesForgeEvents {
         val runtime = TracesMod.getRuntime(player.server)
         runtime.onPlayerLogout(player)
         ReturnSummaryApi.recordLogout(player)
-        ThreadsBridge.forget(player)
+        TraceEpisodes.forget(player)
         TracesNetwork.onPlayerLogout(player)
     }
 

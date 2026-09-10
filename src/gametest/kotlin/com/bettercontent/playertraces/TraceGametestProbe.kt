@@ -14,8 +14,10 @@ import com.bettercontent.playertraces.echo.EchoFrame
 import com.bettercontent.playertraces.echo.EchoRoot
 import com.bettercontent.playertraces.logic.AnnotationService
 import com.bettercontent.playertraces.logic.ErosionService
+import com.bettercontent.playertraces.api.event.TraceEpisodeEvent
 import com.bettercontent.playertraces.storage.AnnotationEchoSavedData
 import com.bettercontent.playertraces.storage.TraceStorageManager
+import com.bettercontent.playertraces.trace.TraceEpisodes
 import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTest
 import net.minecraft.gametest.framework.GameTestHelper
@@ -24,10 +26,21 @@ import net.minecraft.server.level.ServerPlayer
 import net.minecraft.resources.ResourceLocation
 import net.minecraft.world.level.block.Blocks
 import net.minecraftforge.gametest.GameTestHolder
+import net.minecraftforge.common.MinecraftForge
+import net.minecraftforge.eventbus.api.SubscribeEvent
 import java.util.UUID
 
 @GameTestHolder("player_traces")
 object TraceGametestProbe {
+
+    private class TraceEventRecorder {
+        val events = mutableListOf<TraceEpisodeEvent>()
+
+        @SubscribeEvent
+        fun onTraceEpisode(event: TraceEpisodeEvent) {
+            events += event
+        }
+    }
 
     private fun validEchoClip(): ByteArray = EchoClipCodec.encodeQuantized(
         EchoClip(
@@ -381,6 +394,66 @@ object TraceGametestProbe {
             helper.assertTrue(echoes.get(created.id)?.annotationRevision == 2, "operator replacement should invalidate the old echo revision")
             helper.succeed()
         } finally {
+            storage.close()
+        }
+    }
+
+    @GameTest(batch = "player_traces", template = "empty", timeoutTicks = 220)
+    @JvmStatic
+    fun traceJourneyEventsAreCorrelatedAndPublishedOnce(helper: GameTestHelper) {
+        val level = helper.level
+        val player = ServerPlayer(
+            level.server,
+            level,
+            GameProfile(UUID.randomUUID(), "trace-episode"),
+        )
+        val origin = player.blockPosition()
+        val storage = TraceStorageManager(level, TracesConfig.common)
+        val recorder = TraceEventRecorder()
+        MinecraftForge.EVENT_BUS.register(recorder)
+
+        try {
+            TraceEpisodes.forget(player)
+            TraceEpisodes.traceCommitted(player)
+            TraceEpisodes.traceCommitted(player)
+            helper.assertTrue(recorder.events.size == 1, "commit must publish once per journey")
+
+            player.tickCount = 20
+            player.setPos(origin.x + 20.0, origin.y.toDouble(), origin.z.toDouble())
+            TraceEpisodes.checkReturn(player, storage)
+
+            storage.addFootTrace(FootTrace(
+                id = UUID.randomUUID(),
+                levelKey = level.dimension().location().toString(),
+                blockPos = origin,
+                movementClass = MovementClass.WALK,
+                strength = 1.0f,
+                sequenceId = UUID.randomUUID(),
+                sequenceIndex = 0,
+                createdAt = level.gameTime - 6000,
+                sequenceEpoch = 1,
+                surviving = true,
+                sourcePlayerInternal = player.uuid,
+                support = TraceSupport(origin.below(), ResourceLocation("minecraft", "stone")),
+            ))
+            player.tickCount = 40
+            player.setPos(origin.x.toDouble(), origin.y.toDouble(), origin.z.toDouble())
+            TraceEpisodes.checkReturn(player, storage)
+            TraceEpisodes.checkReturn(player, storage)
+
+            helper.assertTrue(recorder.events.size == 2, "return must publish once and close the journey")
+            val committed = recorder.events[0]
+            val returned = recorder.events[1]
+            helper.assertTrue(committed.kind == TraceEpisodeEvent.Kind.COMMITTED, "first boundary must be COMMITTED")
+            helper.assertTrue(returned.kind == TraceEpisodeEvent.Kind.RETURNED, "second boundary must be RETURNED")
+            helper.assertTrue(committed.episodeId == returned.episodeId, "journey boundaries must share an episode ID")
+            helper.assertTrue(committed.player === player && returned.player === player, "events must expose the authoritative player")
+            helper.assertTrue(committed.originDimension == level.dimension() && committed.origin == origin,
+                "event must retain the journey origin")
+            helper.succeed()
+        } finally {
+            MinecraftForge.EVENT_BUS.unregister(recorder)
+            TraceEpisodes.forget(player)
             storage.close()
         }
     }
