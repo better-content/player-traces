@@ -18,6 +18,18 @@ group = "com.bettercontent"
 
 java.toolchain.languageVersion.set(JavaLanguageVersion.of(17))
 
+// CI and fresh-release builds provide verified runtime JARs explicitly.
+// Ordinary local builds retain the canonical sibling build/libs convention.
+fun betterContentJar(repository: String, artifact: String): java.io.File {
+    val directory = providers.environmentVariable("BC_CUSTOM_MOD_JAR_DIR").orNull
+    require(directory == null || directory.isNotBlank()) { "BC_CUSTOM_MOD_JAR_DIR must not be blank" }
+    val jar = if (directory == null) file("../$repository/build/libs/$artifact") else file(directory).resolve(artifact)
+    require(jar.isFile) {
+        "Missing Better Content provider $artifact at $jar; prepare BC_CUSTOM_MOD_JAR_DIR or build $repository first"
+    }
+    return jar
+}
+
 repositories {
     mavenCentral()
     maven("https://maven.minecraftforge.net")
@@ -38,7 +50,7 @@ repositories {
 dependencies {
     minecraft("net.minecraftforge:forge:${minecraftVersion}-${forgeVersion}")
     implementation("thedarkcolour:kotlinforforge:4.12.0")
-    compileOnly(files("../downed-player-revival/build/libs/downed-player-revival-1.0.0.jar"))
+    compileOnly(files(betterContentJar("downed-player-revival", "downed-player-revival-1.0.0.jar")))
     compileOnly(fg.deobf("curse.maven:quark-243121:6427817"))
     compileOnly(fg.deobf("curse.maven:zeta-968868:7335229"))
     if (shaderCompatibilityValidation) {
