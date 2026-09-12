@@ -132,16 +132,30 @@ object TraceGametestProbe {
         }
     }
 
+    private fun rainFixturePosition(helper: GameTestHelper, coordinate: Int): BlockPos {
+        val level = helper.level
+        level.getChunkAt(BlockPos(coordinate, 64, coordinate))
+        val position = BlockPos(coordinate,
+            level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING, coordinate, coordinate) + 1,
+            coordinate)
+        // These fixtures live outside other trace shards and explicitly select a rainy biome.
+        level.server.commands.performPrefixedCommand(level.server.createCommandSourceStack().withLevel(level).withSuppressedOutput(),
+            "fillbiome ${position.x} ${position.y} ${position.z} ${position.x} ${position.y} ${position.z} minecraft:plains")
+        return position
+    }
+
     @GameTest(batch = "player_traces", template = "empty", timeoutTicks = 260)
     @JvmStatic
     fun rainWeakensExposedTrace(helper: GameTestHelper) {
         val level = helper.level
         val storage = TraceStorageManager(level, TracesConfig.common)
         val erosion = ErosionService(storage, TracesConfig.common)
+        val position = rainFixturePosition(helper, 5000)
+        level.setBlockAndUpdate(position.below(), Blocks.STONE.defaultBlockState())
         val trace = FootTrace(
             id = UUID.randomUUID(),
             levelKey = level.dimension().location().toString(),
-            blockPos = BlockPos(900, 64, 900),
+            blockPos = position,
             movementClass = MovementClass.WALK,
             strength = 1.0f,
             sequenceId = UUID.randomUUID(),
@@ -150,19 +164,20 @@ object TraceGametestProbe {
             sequenceEpoch = 1,
             surviving = true,
             sourcePlayerInternal = UUID.randomUUID(),
-            support = TraceSupport(BlockPos(900, 63, 900), ResourceLocation("minecraft", "stone")),
+            support = TraceSupport(position.below(), ResourceLocation("minecraft", "stone")),
         )
 
         try {
             level.setWeatherParameters(0, 200, true, false)
             level.rainLevel = 1f
             level.oRainLevel = 1f
+            helper.assertTrue(level.isRainingAt(position), "precondition: exposed trace receives rain: sky=${level.canSeeSky(position)} rain=${level.getRainLevel(0f)} biome=${level.getBiome(position).unwrapKey()} position=$position")
             storage.addFootTrace(trace)
             storage.tickFlush()
 
-            val before = storage.queryTraces(trace.blockPos, trace.blockPos).first()
+            val before = storage.queryTraces(trace.blockPos, trace.blockPos).single { it.id == trace.id }
             erosion.tick(level, 80)
-            val after = storage.queryTraces(trace.blockPos, trace.blockPos).first()
+            val after = storage.queryTraces(trace.blockPos, trace.blockPos).single { it.id == trace.id }
 
             helper.assertTrue(after.strength < before.strength || !after.surviving, "exposed rain should reduce trace strength")
             helper.succeed()
@@ -178,10 +193,12 @@ object TraceGametestProbe {
         val level = helper.level
         val storage = TraceStorageManager(level, TracesConfig.common)
         val erosion = ErosionService(storage, TracesConfig.common)
+        val position = rainFixturePosition(helper, 6008)
+        level.setBlockAndUpdate(position.below(), Blocks.STONE.defaultBlockState())
         val trace = FootTrace(
             id = UUID.randomUUID(),
             levelKey = level.dimension().location().toString(),
-            blockPos = BlockPos(1200, 64, 1200),
+            blockPos = position,
             movementClass = MovementClass.WALK,
             strength = 1.0f,
             sequenceId = UUID.randomUUID(),
@@ -190,27 +207,34 @@ object TraceGametestProbe {
             sequenceEpoch = 1,
             surviving = true,
             sourcePlayerInternal = UUID.randomUUID(),
-            support = TraceSupport(BlockPos(1200, 63, 1200), ResourceLocation("minecraft", "stone")),
+            support = TraceSupport(position.below(), ResourceLocation("minecraft", "stone")),
         )
 
         val coverPos = BlockPos(trace.blockPos.x, trace.blockPos.y + 30, trace.blockPos.z)
 
-        try {
-            level.setBlockAndUpdate(coverPos, Blocks.STONE.defaultBlockState())
-            level.setWeatherParameters(0, 200, true, false)
-
-            storage.addFootTrace(trace)
-            storage.tickFlush()
-
-            val before = storage.queryTraces(trace.blockPos, trace.blockPos).first()
-            erosion.tick(level, 80)
-            val after = storage.queryTraces(trace.blockPos, trace.blockPos).first()
-            helper.assertTrue(after.strength >= before.strength * 0.99f, "sheltered trace should remain stable")
-            helper.succeed()
-        } finally {
-            level.setBlockAndUpdate(coverPos, Blocks.AIR.defaultBlockState())
-            level.setWeatherParameters(0, 0, false, false)
-            storage.close()
+        level.setBlockAndUpdate(coverPos, Blocks.STONE.defaultBlockState())
+        level.setWeatherParameters(0, 200, true, false)
+        level.rainLevel = 1f
+        level.oRainLevel = 1f
+        storage.addFootTrace(trace)
+        storage.tickFlush()
+        // Skylight propagation is asynchronous; observe the finished shelter, not the write call.
+        helper.runAfterDelay(5L) {
+            try {
+                level.setWeatherParameters(0, 200, true, false)
+                level.rainLevel = 1f
+                level.oRainLevel = 1f
+                helper.assertTrue(!level.canSeeSky(position), "precondition: trace is sheltered")
+                val before = storage.queryTraces(trace.blockPos, trace.blockPos).single { it.id == trace.id }
+                erosion.tick(level, 80)
+                val after = storage.queryTraces(trace.blockPos, trace.blockPos).single { it.id == trace.id }
+                helper.assertTrue(after.strength >= before.strength * 0.99f, "sheltered trace should remain stable")
+                helper.succeed()
+            } finally {
+                level.setBlockAndUpdate(coverPos, Blocks.AIR.defaultBlockState())
+                level.setWeatherParameters(0, 0, false, false)
+                storage.close()
+            }
         }
     }
 
