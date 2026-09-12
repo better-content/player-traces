@@ -546,47 +546,20 @@ data class DeathCaptureRequestPacket(
     val x: Double,
     val y: Double,
     val z: Double,
-    val captureToken: UUID? = null,
 ) {
     fun encode(buf: FriendlyByteBuf) {
         require(validPoint(x, y, z)) { "death capture position is invalid" }
         buf.writeUUID(nonce); buf.writeDouble(x); buf.writeDouble(y); buf.writeDouble(z)
-        buf.writeBoolean(captureToken != null); captureToken?.let(buf::writeUUID)
     }
 
     companion object {
         fun decode(buf: FriendlyByteBuf): DeathCaptureRequestPacket {
             val nonce = buf.readUUID(); val x = buf.readDouble(); val y = buf.readDouble(); val z = buf.readDouble()
-            val packet = DeathCaptureRequestPacket(nonce, x, y, z, if (buf.readBoolean()) buf.readUUID() else null)
+            val packet = DeathCaptureRequestPacket(nonce, x, y, z)
             require(validPoint(packet.x, packet.y, packet.z)) { "death capture position is invalid" }
             return packet
         }
     }
-}
-
-data class DownedCaptureFreezePacket(
-    val token: UUID,
-    val dimension: String,
-    val x: Double,
-    val y: Double,
-    val z: Double,
-    val downGameTime: Long,
-) {
-    fun encode(buf: FriendlyByteBuf) {
-        require(dimension.length <= 256 && validPoint(x, y, z) && downGameTime >= 0L) { "downed capture freeze is invalid" }
-        buf.writeUUID(token); buf.writeUtf(dimension, 256); buf.writeDouble(x); buf.writeDouble(y); buf.writeDouble(z); buf.writeVarLong(downGameTime)
-    }
-
-    companion object {
-        fun decode(buf: FriendlyByteBuf): DownedCaptureFreezePacket = DownedCaptureFreezePacket(
-            buf.readUUID(), buf.readUtf(256), buf.readDouble(), buf.readDouble(), buf.readDouble(), buf.readVarLong(),
-        ).also { require(validPoint(it.x, it.y, it.z) && it.downGameTime >= 0L) { "downed capture freeze is invalid" } }
-    }
-}
-
-data class DownedCaptureDiscardPacket(val token: UUID) {
-    fun encode(buf: FriendlyByteBuf) { buf.writeUUID(token) }
-    companion object { fun decode(buf: FriendlyByteBuf) = DownedCaptureDiscardPacket(buf.readUUID()) }
 }
 
 data class DeathEchoSubmitPacket(val nonce: UUID, val encodedClip: ByteArray) {

@@ -39,7 +39,6 @@ object DeathEchoRecorder {
     private var currentPlayer: UUID? = null
     private var currentDimension: String? = null
     private var selectedCapture: SelectedCapture? = null
-    private var frozenDeathCapture: FrozenDeathCapture? = null
 
     @SubscribeEvent
     @JvmStatic
@@ -51,7 +50,6 @@ object DeathEchoRecorder {
         val dimension = level.dimension().location().toString()
         if (currentPlayer != player.uuid || currentDimension != dimension) {
             rollingFrames.clear()
-            frozenDeathCapture = null
             currentPlayer = player.uuid
             currentDimension = dimension
             lastSampleGameTime = Long.MIN_VALUE
@@ -86,94 +84,21 @@ object DeathEchoRecorder {
         capturedBones = encodeParts(event.renderer.model)
     }
 
-    fun freezeForDowned(
-        captureToken: UUID,
-        dimension: String,
-        x: Double,
-        y: Double,
-        z: Double,
-        downGameTime: Long,
-    ): Boolean {
-        val snapshot = rollingFrames.snapshot()
-            .filter { it.gameTime < downGameTime }
-            .takeLast(EchoClip.SAMPLE_RATE * RECORDING_SECONDS)
-        if (snapshot.isEmpty() || currentDimension != dimension) {
-            frozenDeathCapture = null
-            log.warn(
-                "TRACES_DEATH_ECHO_FREEZE_SKIPPED reason={} token={} expectedDimension={} clientDimension={}",
-                if (snapshot.isEmpty()) "no_rolling_frames" else "dimension_mismatch",
-                captureToken,
-                dimension,
-                currentDimension,
-            )
-            return false
+    fun onDeathConfirmed(request: DeathCaptureRequestPacket) {
+        val snapshot = rollingFrames.snapshot().takeLast(EchoClip.SAMPLE_RATE * RECORDING_SECONDS)
+        if (snapshot.isEmpty()) {
+            log.warn("TRACES_DEATH_ECHO_SKIPPED reason=no_rolling_frames nonce={}", request.nonce)
+            return
         }
-        val anchor = Vec3(x, y, z)
-        return runCatching {
-            frozenDeathCapture = FrozenDeathCapture(
-                token = captureToken,
-                dimension = dimension,
-                anchor = anchor,
-                encodedClip = encodeDeath(snapshot, anchor),
-            )
-            log.info(
-                "TRACES_DEATH_ECHO_FROZEN frames={} bytes={} token={} dimension={}",
-                snapshot.size,
-                frozenDeathCapture!!.encodedClip.size,
-                captureToken,
-                dimension,
-            )
-            true
-        }.getOrElse {
-            frozenDeathCapture = null
-            log.warn("TRACES_DEATH_ECHO_FREEZE_SKIPPED reason=encode_failed token={}", captureToken, it)
-            false
-        }
-    }
-
-    fun discardDownedCapture(captureToken: UUID? = null) {
-        val frozen = frozenDeathCapture ?: return
-        if (captureToken == null || frozen.token == captureToken) {
-            frozenDeathCapture = null
-            log.debug("Discarded frozen downed death capture {}", frozen.token)
-        }
-    }
-
-    fun onDeathConfirmed(request: DeathCaptureRequestPacket) = onDeathConfirmed(request, null)
-
-    fun onDeathConfirmed(request: DeathCaptureRequestPacket, captureToken: UUID?) {
-        val encoded = if (captureToken != null) {
-            val frozen = frozenDeathCapture
-            if (frozen == null || frozen.token != captureToken || frozen.dimension != currentDimension) {
-                log.warn("TRACES_DEATH_ECHO_SKIPPED reason=frozen_capture_absent token={} nonce={}", captureToken, request.nonce)
-                return
-            }
-            frozenDeathCapture = null
-            val requestedAnchor = Vec3(request.x, request.y, request.z)
-            if (frozen.anchor.distanceToSqr(requestedAnchor) > MAX_ANCHOR_DRIFT_SQUARED) {
-                log.warn("TRACES_DEATH_ECHO_SKIPPED reason=frozen_anchor_mismatch token={} nonce={}", captureToken, request.nonce)
-                return
-            }
-            frozen.encodedClip
-        } else {
-            frozenDeathCapture = null
-            val snapshot = rollingFrames.snapshot().takeLast(EchoClip.SAMPLE_RATE * RECORDING_SECONDS)
-            if (snapshot.isEmpty()) {
-                log.warn("TRACES_DEATH_ECHO_SKIPPED reason=no_rolling_frames nonce={}", request.nonce)
-                return
-            }
-            runCatching { encodeDeath(snapshot, Vec3(request.x, request.y, request.z)) }.getOrElse {
-                log.warn("TRACES_DEATH_ECHO_SKIPPED reason=encode_failed nonce={}", request.nonce, it)
-                return
-            }
+        val encoded = runCatching { encodeDeath(snapshot, Vec3(request.x, request.y, request.z)) }.getOrElse {
+            log.warn("TRACES_DEATH_ECHO_SKIPPED reason=encode_failed nonce={}", request.nonce, it)
+            return
         }
         runCatching {
             TracesNetwork.submitDeathEcho(DeathEchoSubmitPacket(request.nonce, encoded))
             rollingFrames.clear()
-            log.info(
-                "TRACES_DEATH_ECHO_SUBMITTED camera={} bytes={} nonce={} frozen={}",
-                Minecraft.getInstance().options.cameraType.name.lowercase(), encoded.size, request.nonce, captureToken != null,
-            )
+            log.info("TRACES_DEATH_ECHO_SUBMITTED camera={} bytes={} nonce={}",
+                Minecraft.getInstance().options.cameraType.name.lowercase(), encoded.size, request.nonce)
         }.onFailure {
             log.warn("TRACES_DEATH_ECHO_SKIPPED reason=submit_failed nonce={}", request.nonce, it)
         }
@@ -255,7 +180,6 @@ object DeathEchoRecorder {
         currentPlayer = null
         currentDimension = null
         lastSampleGameTime = Long.MIN_VALUE
-        frozenDeathCapture = null
         selectedCapture?.fail?.invoke(IllegalStateException("gesture capture was interrupted"))
         selectedCapture = null
     }
@@ -283,14 +207,6 @@ object DeathEchoRecorder {
         val fail: (Throwable) -> Unit,
     )
 
-    private data class FrozenDeathCapture(
-        val token: UUID,
-        val dimension: String,
-        val anchor: Vec3,
-        val encodedClip: ByteArray,
-    )
-
     private const val RECORDING_SECONDS = 3
     private const val FULL_BRIGHT = 0x00F000F0
-    private const val MAX_ANCHOR_DRIFT_SQUARED = 0.01
 }

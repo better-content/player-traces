@@ -90,9 +90,8 @@ Nearby changed-note guidance is server-authored and shown as bounded floating ro
 - Trace Sight keeps its subtle dim/vignette but draws no cyan border and never suppresses vanilla or modded HUD overlays.
 - It does not copy, replace, desaturate, or composite the full world framebuffer.
 
-### Optional revival integration
-- When `downed_player_revival` is present, Traces listens to its public downed/revived events without a compile-time dependency.
-- Death footage is frozen strictly from frames before the down event and anchored at the down position. Revival discards it; a direct death continues to use the ordinary pre-death buffer.
+### Death’s Door integration
+Death’s Door keeps the player active. The rolling pose recorder continues through injury and healing, and the ordinary final-death event requests the most recent three seconds at the actual death location. Traces has no Revival API dependency and stores no bodily treatment history.
 
 ## Canonical identity
 

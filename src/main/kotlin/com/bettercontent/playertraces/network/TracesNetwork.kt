@@ -18,7 +18,7 @@ import com.mojang.logging.LogUtils
 
 object TracesNetwork {
     private val logger = LogUtils.getLogger()
-    private const val PROTOCOL = "player_traces_v7"
+    private const val PROTOCOL = "player_traces_v8"
     private const val MAX_TILE_SNAPSHOTS_PER_POLL = 64
     private const val TILE_PAGE_SIZE = 1024
     private val nextSubscriptionGeneration = AtomicLong(1L)
@@ -51,8 +51,6 @@ object TracesNetwork {
         channel.registerMessage(10, AnnotationEchoResponsePacket::class.java, AnnotationEchoResponsePacket::encode, AnnotationEchoResponsePacket.Companion::decode) { msg, context -> onAnnotationEchoResponse(msg, context) }
         channel.registerMessage(11, TraceTileSnapshotPacket::class.java, TraceTileSnapshotPacket::encode, TraceTileSnapshotPacket.Companion::decode) { msg, context -> onTraceTileSnapshot(msg, context) }
         channel.registerMessage(12, TraceTileEvictPacket::class.java, TraceTileEvictPacket::encode, TraceTileEvictPacket.Companion::decode) { msg, context -> onTraceTileEvict(msg, context) }
-        channel.registerMessage(13, DownedCaptureFreezePacket::class.java, DownedCaptureFreezePacket::encode, DownedCaptureFreezePacket.Companion::decode) { msg, context -> onDownedCaptureFreeze(msg, context) }
-        channel.registerMessage(14, DownedCaptureDiscardPacket::class.java, DownedCaptureDiscardPacket::encode, DownedCaptureDiscardPacket.Companion::decode) { msg, context -> onDownedCaptureDiscard(msg, context) }
     }
 
     private fun onRequest(msg: TraceQueryRequestPacket, ctx: Supplier<NetworkEvent.Context>) {
@@ -197,27 +195,9 @@ object TracesNetwork {
         val context = ctx.get()
         context.enqueueWork {
             DistExecutor.unsafeRunWhenOn(Dist.CLIENT) {
-                Runnable { com.bettercontent.playertraces.client.death.DeathEchoRecorder.onDeathConfirmed(msg, msg.captureToken) }
+                Runnable { com.bettercontent.playertraces.client.death.DeathEchoRecorder.onDeathConfirmed(msg) }
             }
         }
-        context.packetHandled = true
-    }
-
-    private fun onDownedCaptureFreeze(msg: DownedCaptureFreezePacket, ctx: Supplier<NetworkEvent.Context>) {
-        val context = ctx.get()
-        context.enqueueWork { DistExecutor.unsafeRunWhenOn(Dist.CLIENT) { Runnable {
-            com.bettercontent.playertraces.client.death.DeathEchoRecorder.freezeForDowned(
-                msg.token, msg.dimension, msg.x, msg.y, msg.z, msg.downGameTime,
-            )
-        } } }
-        context.packetHandled = true
-    }
-
-    private fun onDownedCaptureDiscard(msg: DownedCaptureDiscardPacket, ctx: Supplier<NetworkEvent.Context>) {
-        val context = ctx.get()
-        context.enqueueWork { DistExecutor.unsafeRunWhenOn(Dist.CLIENT) { Runnable {
-            com.bettercontent.playertraces.client.death.DeathEchoRecorder.discardDownedCapture(msg.token)
-        } } }
         context.packetHandled = true
     }
 
@@ -372,18 +352,6 @@ object TracesNetwork {
     fun deleteAnnotation(id: String, expectedRevision: Int) = channel.sendToServer(AnnotationDeletePacket(id, expectedRevision))
     fun requestDeathEcho(player: net.minecraft.server.level.ServerPlayer, packet: DeathCaptureRequestPacket) =
         channel.send(PacketDistributor.PLAYER.with { player }, packet)
-    fun freezeDeathEcho(
-        player: net.minecraft.server.level.ServerPlayer,
-        token: UUID,
-        dimension: String,
-        position: net.minecraft.world.phys.Vec3,
-        downGameTime: Long,
-    ) = channel.send(
-        PacketDistributor.PLAYER.with { player },
-        DownedCaptureFreezePacket(token, dimension, position.x, position.y, position.z, downGameTime),
-    )
-    fun discardDeathEcho(player: net.minecraft.server.level.ServerPlayer, token: UUID) =
-        channel.send(PacketDistributor.PLAYER.with { player }, DownedCaptureDiscardPacket(token))
     fun submitDeathEcho(packet: DeathEchoSubmitPacket) = channel.sendToServer(packet)
     fun requestAnnotationEcho(id: String, revision: Int) = channel.sendToServer(AnnotationEchoRequestPacket(id, revision))
 

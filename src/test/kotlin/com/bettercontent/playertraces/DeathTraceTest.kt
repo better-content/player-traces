@@ -27,6 +27,19 @@ import java.util.UUID
 
 class DeathTraceTest {
     @Test
+    fun `confirmed death request round trips actual final position without episode token`() {
+        val request = com.bettercontent.playertraces.network.DeathCaptureRequestPacket(UUID.randomUUID(), 12.5, -30.0, 45.25)
+        val buffer = net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.buffer())
+        try {
+            request.encode(buffer)
+            assertEquals(request, com.bettercontent.playertraces.network.DeathCaptureRequestPacket.decode(buffer))
+            assertEquals(0, buffer.readableBytes())
+        } finally {
+            buffer.release()
+        }
+    }
+
+    @Test
     fun `ghost body uses exact player model scale without scaling recorded movement`() {
         val root = EchoRoot(2f, 3f, 4f, 0f, 0f)
         val anchor = Vec3(10.0, 20.0, 30.0)

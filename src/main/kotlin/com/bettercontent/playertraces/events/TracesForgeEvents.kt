@@ -8,7 +8,6 @@ import net.minecraftforge.event.server.ServerStartedEvent
 import net.minecraftforge.event.server.ServerStoppingEvent
 import net.minecraftforge.eventbus.api.SubscribeEvent
 import net.minecraftforge.event.entity.living.LivingDeathEvent
-import com.bettercontent.playertraces.compat.DownedPlayerRevivalBridge
 import com.bettercontent.playertraces.network.TracesNetwork
 import net.minecraft.server.level.ServerLevel
 import net.minecraftforge.event.level.BlockEvent
@@ -20,7 +19,6 @@ import com.bettercontent.playertraces.trace.TraceEpisodes
 object TracesForgeEvents {
     @SubscribeEvent
     fun onServerStarted(event: ServerStartedEvent) {
-        DownedPlayerRevivalBridge.registerIfPresent()
         TracesMod.getRuntime(event.server)
     }
 
