@@ -21,9 +21,13 @@ object TraceSupportResolver {
         val startY = floor(point.y + 0.25).toInt().coerceIn(level.minBuildHeight, level.maxBuildHeight - 1)
         val localX = point.x - x
         val localZ = point.z - z
+        // Player-traces runs from player-tick hooks. Never turn a telemetry lookup into a
+        // synchronous chunk load or world-generation request; support is absent until the
+        // containing chunk is already available to the server.
+        val chunk = level.chunkSource.getChunkNow(x shr 4, z shr 4) ?: return null
         for (y in startY downTo maxOf(level.minBuildHeight, startY - maxDepth.coerceAtLeast(0))) {
             val blockPos = BlockPos(x, y, z)
-            val state = level.getBlockState(blockPos)
+            val state = chunk.getBlockState(blockPos)
             if (state.isAir) continue
             val shape = state.getCollisionShape(level, blockPos, CollisionContext.empty())
             val top = shape.toAabbs().asSequence()
