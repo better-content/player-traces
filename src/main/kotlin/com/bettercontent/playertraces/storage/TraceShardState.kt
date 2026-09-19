@@ -157,6 +157,17 @@ class TraceShardState {
     }
 
     @Synchronized
+    fun updateTraceWeakness(traceId: java.util.UUID, factor: Double): Boolean {
+        val index = footTraces.indexOfFirst { it.id == traceId && it.surviving }
+        if (index < 0) return false
+        val trace = footTraces[index]
+        val next = trace.strength * factor.toFloat()
+        footTraces[index] = if (next <= 0.04f) trace.copy(surviving = false) else trace.copy(strength = next)
+        markTraceTilesDirty(setOf(TraceTileId.containing(trace.blockPos)))
+        return true
+    }
+
+    @Synchronized
     fun annotationById(id: java.util.UUID): TraceAnnotation? = annotations.firstOrNull { it.id == id }
 
     @Synchronized

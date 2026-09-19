@@ -7,9 +7,11 @@ import com.bettercontent.playertraces.domain.TraceAnnotation
 import com.bettercontent.playertraces.domain.TraceKind
 import com.bettercontent.playertraces.domain.TraceSupport
 import com.bettercontent.playertraces.storage.SeenStateRecord
+import com.bettercontent.playertraces.storage.EvictedShardAuthority
 import com.bettercontent.playertraces.storage.TraceSerializer
 import com.bettercontent.playertraces.storage.TraceShardState
 import com.bettercontent.playertraces.util.Geometry
+import com.bettercontent.playertraces.util.TraceShardId
 import net.minecraft.core.BlockPos
 import net.minecraft.resources.ResourceLocation
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -24,6 +26,41 @@ import java.util.UUID
 import java.util.zip.CRC32
 
 class TraceStorageV3Test {
+    @Test
+    fun pendingEvictionRemainsAuthoritativeAcrossReloadAndDelayedWriter(@TempDir dir: Path) {
+        val id = TraceShardId("minecraft:overworld", 0, 0)
+        val authority = EvictedShardAuthority()
+        val first = TraceShardState().apply {
+            addFootTrace(trace("evicted-a", 1.5, 64.0, 1.5, TraceKind.FOOTPRINT,
+                TraceSupport(BlockPos(1, 63, 1), ResourceLocation("minecraft", "stone"))))
+        }
+        val oldSnapshot = first.snapshot().first
+        authority.offer(id, oldSnapshot)
+
+        // A cache miss must recover A from pending authority, not the stale disk file.
+        val reloaded = requireNotNull(authority.reclaim(id))
+        reloaded.addFootTrace(trace("evicted-b", 2.5, 64.0, 1.5, TraceKind.FOOTPRINT,
+            TraceSupport(BlockPos(2, 63, 1), ResourceLocation("minecraft", "stone"))))
+        val newerSnapshot = reloaded.snapshot().first
+        authority.offer(id, newerSnapshot)
+
+        // Model the delayed A writer completing after B was evicted again. It must not
+        // erase B's pending authority; the following durable write must retain both.
+        val path = dir.resolve("r.0.0.traces")
+        TraceSerializer.write(path, oldSnapshot, Geometry.shardToBounds(0, 0))
+        authority.complete(id, oldSnapshot)
+        assertEquals(1, authority.snapshot().size)
+        val pending = authority.snapshot().single().second
+        TraceSerializer.write(path, pending, Geometry.shardToBounds(0, 0))
+        authority.complete(id, pending)
+
+        assertEquals(setOf(
+            UUID.nameUUIDFromBytes("evicted-a".toByteArray()),
+            UUID.nameUUIDFromBytes("evicted-b".toByteArray()),
+        ), TraceSerializer.read(path).footTracesSnapshot().map { it.id }.toSet())
+        assertTrue(authority.snapshot().isEmpty())
+    }
+
     @Test
     fun v3RoundTripPreservesKindsAndSupport(@TempDir dir: Path) {
         val state = TraceShardState()

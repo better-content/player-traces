@@ -210,6 +210,18 @@ object TraceGametestProbe {
             support = TraceSupport(position.below(), ResourceLocation("minecraft", "stone")),
         )
 
+        // This exposed footprint shares the chunk but not the sheltered footprint's
+        // canopy. It catches the former chunk-centre erosion behaviour.
+        val exposedPosition = position.offset(5, 0, 5)
+        level.setBlockAndUpdate(exposedPosition.below(), Blocks.STONE.defaultBlockState())
+        val exposedTrace = trace.copy(
+            id = UUID.randomUUID(),
+            x = exposedPosition.x + 0.5,
+            y = exposedPosition.y.toDouble(),
+            z = exposedPosition.z + 0.5,
+            support = TraceSupport(exposedPosition.below(), ResourceLocation("minecraft", "stone")),
+        )
+
         val coverPos = BlockPos(trace.blockPos.x, trace.blockPos.y + 30, trace.blockPos.z)
 
         level.setBlockAndUpdate(coverPos, Blocks.STONE.defaultBlockState())
@@ -217,6 +229,7 @@ object TraceGametestProbe {
         level.rainLevel = 1f
         level.oRainLevel = 1f
         storage.addFootTrace(trace)
+        storage.addFootTrace(exposedTrace)
         storage.tickFlush()
         // Skylight propagation is asynchronous; observe the finished shelter, not the write call.
         helper.runAfterDelay(5L) {
@@ -228,7 +241,9 @@ object TraceGametestProbe {
                 val before = storage.queryTraces(trace.blockPos, trace.blockPos).single { it.id == trace.id }
                 erosion.tick(level, 80)
                 val after = storage.queryTraces(trace.blockPos, trace.blockPos).single { it.id == trace.id }
+                val exposedAfter = storage.queryTraces(exposedTrace.blockPos, exposedTrace.blockPos).single { it.id == exposedTrace.id }
                 helper.assertTrue(after.strength >= before.strength * 0.99f, "sheltered trace should remain stable")
+                helper.assertTrue(exposedAfter.strength < exposedTrace.strength || !exposedAfter.surviving, "nearby exposed trace should erode without eroding the sheltered footprint")
                 helper.succeed()
             } finally {
                 level.setBlockAndUpdate(coverPos, Blocks.AIR.defaultBlockState())

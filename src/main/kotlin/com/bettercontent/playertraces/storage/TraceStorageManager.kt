@@ -58,7 +58,7 @@ class TraceStorageManager(
     private val annotationIndex = java.util.concurrent.ConcurrentHashMap<UUID, TraceShardId>()
     private val pendingFlushes = mutableListOf<Future<*>>()
     private val queuedFlushes = java.util.concurrent.ConcurrentHashMap.newKeySet<TraceShardId>()
-    private val evictedPending = java.util.concurrent.ConcurrentHashMap<TraceShardId, TraceShardState>()
+    private val evictedPending = EvictedShardAuthority()
     @Volatile private var closed = false
 
     private val worldRoot: Path = level.server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize()
@@ -91,6 +91,18 @@ class TraceStorageManager(
     private fun loadShard(id: TraceShardId): TraceShardState {
         val existing = cache.get(id)
         if (existing != null) return existing
+        // An evicted shard remains authoritative until its queued snapshot has reached disk.
+        // Never reload the older on-disk version while that state is still in flight.
+        val pending = evictedPending.reclaim(id)
+        if (pending != null) {
+            val evicted = cache.put(id, pending)
+            indexShard(id, pending)
+            if (evicted != null && evicted.second.dirty) {
+                val (snapshot, _) = evicted.second.snapshot()
+                queueEvicted(evicted.first, snapshot)
+            }
+            return pending
+        }
         val path = shardPath(id)
         val loaded = if (Files.exists(path)) {
             val state = TraceSerializer.read(path)
@@ -121,11 +133,11 @@ class TraceStorageManager(
     }
 
     private fun queueEvicted(id: TraceShardId, snapshot: TraceShardState) {
-        evictedPending[id] = snapshot
+        evictedPending.offer(id, snapshot)
         pendingFlushes += dirtyExecutor.submit {
             try {
                 writeSnapshot(id, snapshot)
-                evictedPending.remove(id, snapshot)
+                evictedPending.complete(id, snapshot)
             } catch (error: Exception) {
                 log.warn("Failed to flush evicted trace shard {}", id, error)
             }
@@ -350,6 +362,16 @@ class TraceStorageManager(
         }
     }
 
+    /** Applies rain erosion to one previously qualified footprint only. */
+    fun weakenFootprint(traceId: UUID, position: BlockPos, factor: Double): Boolean {
+        val (sx, sz) = Geometry.worldToShard(position)
+        val id = TraceShardId(worldDimensionPath(), sx, sz)
+        val state = loadShard(id)
+        val changed = state.updateTraceWeakness(traceId, factor)
+        if (changed) markDirty(id)
+        return changed
+    }
+
     fun allStorageShards(): Sequence<TraceShardState> = cache.valuesSnapshot().asSequence()
 
     fun shardIdsWithLivingTraces(radiusLimit: Int = 64): List<TraceShardId> {
@@ -498,10 +520,10 @@ class TraceStorageManager(
                 failures += error
             }
         }
-        for ((id, snapshot) in evictedPending.entries.toList()) {
+        for ((id, snapshot) in evictedPending.snapshot()) {
             try {
                 writeSnapshot(id, snapshot)
-                evictedPending.remove(id, snapshot)
+                evictedPending.complete(id, snapshot)
             } catch (error: Exception) {
                 failures += error
             }
@@ -515,3 +537,23 @@ internal data class SeenStateRecord(
     val playerId: UUID,
     val highestRevision: Int,
 )
+
+/**
+ * Holds an evicted snapshot until it is either reclaimed by a cache miss or durably written.
+ * Identity-aware completion prevents an older queued writer from deleting a newer eviction.
+ */
+internal class EvictedShardAuthority {
+    private val pending = java.util.concurrent.ConcurrentHashMap<TraceShardId, TraceShardState>()
+
+    fun offer(id: TraceShardId, snapshot: TraceShardState) {
+        pending[id] = snapshot
+    }
+
+    fun reclaim(id: TraceShardId): TraceShardState? = pending.remove(id)
+
+    fun complete(id: TraceShardId, snapshot: TraceShardState) {
+        pending.remove(id, snapshot)
+    }
+
+    fun snapshot(): List<Pair<TraceShardId, TraceShardState>> = pending.entries.map { it.key to it.value }
+}
