@@ -544,15 +544,19 @@ internal data class SeenStateRecord(
  */
 internal class EvictedShardAuthority {
     private val pending = java.util.concurrent.ConcurrentHashMap<TraceShardId, TraceShardState>()
+    private val revisions = java.util.concurrent.ConcurrentHashMap<TraceShardId, Long>()
 
     fun offer(id: TraceShardId, snapshot: TraceShardState) {
-        pending[id] = snapshot
+        val revision = snapshot.tileRevisionsSnapshot().values.maxOrNull() ?: 0L
+        revisions.compute(id) { _, current ->
+            if (current == null || revision >= current) { pending[id] = snapshot; revision } else current
+        }
     }
 
-    fun reclaim(id: TraceShardId): TraceShardState? = pending.remove(id)
+    fun reclaim(id: TraceShardId): TraceShardState? = pending.remove(id).also { if (it != null) revisions.remove(id) }
 
     fun complete(id: TraceShardId, snapshot: TraceShardState) {
-        pending.remove(id, snapshot)
+        if (pending.remove(id, snapshot)) revisions.remove(id)
     }
 
     fun snapshot(): List<Pair<TraceShardId, TraceShardState>> = pending.entries.map { it.key to it.value }
