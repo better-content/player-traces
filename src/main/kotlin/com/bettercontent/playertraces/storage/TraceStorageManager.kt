@@ -543,21 +543,23 @@ internal data class SeenStateRecord(
  * Identity-aware completion prevents an older queued writer from deleting a newer eviction.
  */
 internal class EvictedShardAuthority {
-    private val pending = java.util.concurrent.ConcurrentHashMap<TraceShardId, TraceShardState>()
-    private val revisions = java.util.concurrent.ConcurrentHashMap<TraceShardId, Long>()
+    private data class Pending(val serial: Long, val snapshot: TraceShardState)
+    private val pending = mutableMapOf<TraceShardId, Pending>()
+    private var nextSerial = 0L
 
+    @Synchronized
     fun offer(id: TraceShardId, snapshot: TraceShardState) {
-        val revision = snapshot.tileRevisionsSnapshot().values.maxOrNull() ?: 0L
-        revisions.compute(id) { _, current ->
-            if (current == null || revision >= current) { pending[id] = snapshot; revision } else current
-        }
+        pending[id] = Pending(++nextSerial, snapshot)
     }
 
-    fun reclaim(id: TraceShardId): TraceShardState? = pending.remove(id).also { if (it != null) revisions.remove(id) }
+    @Synchronized
+    fun reclaim(id: TraceShardId): TraceShardState? = pending.remove(id)?.snapshot
 
+    @Synchronized
     fun complete(id: TraceShardId, snapshot: TraceShardState) {
-        if (pending.remove(id, snapshot)) revisions.remove(id)
+        if (pending[id]?.snapshot === snapshot) pending.remove(id)
     }
 
-    fun snapshot(): List<Pair<TraceShardId, TraceShardState>> = pending.entries.map { it.key to it.value }
+    @Synchronized
+    fun snapshot(): List<Pair<TraceShardId, TraceShardState>> = pending.map { it.key to it.value.snapshot }
 }
