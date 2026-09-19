@@ -218,6 +218,14 @@ class TraceCoreTest {
     }
 
     @Test
+    fun traceControlsYieldToMountedRailContextAndScreens() {
+        assertTrue(com.bettercontent.playertraces.client.TracesClientHandlers.inputContextAvailable(true, false, false))
+        assertFalse(com.bettercontent.playertraces.client.TracesClientHandlers.inputContextAvailable(true, false, true))
+        assertFalse(com.bettercontent.playertraces.client.TracesClientHandlers.inputContextAvailable(true, true, false))
+        assertFalse(com.bettercontent.playertraces.client.TracesClientHandlers.inputContextAvailable(false, false, false))
+    }
+
+    @Test
     fun annotationOpeningKeyIsIgnoredUntilItIsReleased() {
         val guard = OpeningKeyInputGuard(78)
         assertTrue(guard.suppressCharacterInput())

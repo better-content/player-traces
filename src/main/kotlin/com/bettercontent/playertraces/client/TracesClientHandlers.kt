@@ -50,6 +50,10 @@ object TracesClientHandlers {
     @JvmStatic
     @Suppress("UNUSED_PARAMETER")
     fun onKeyInput(event: InputEvent.Key) {
+        val mc = Minecraft.getInstance()
+        // Rail Beetle and other vehicle controls own input while mounted; do not
+        // consume their shared key context or leave a trace action latched.
+        if (!inputContextAvailable(mc)) return
         if (TracesClientConfig.revealToggle.consumeClick()) {
             TracesClientState.toggleOverlay()
             cooldown = 0
@@ -61,8 +65,7 @@ object TracesClientHandlers {
             )
         }
         if (TracesClientConfig.placeAnnotation.consumeClick()) {
-            val mc = Minecraft.getInstance()
-            if (mc.player != null && mc.screen == null) {
+            if (mc.player != null) {
                 val blockHit = (mc.hitResult as? net.minecraft.world.phys.BlockHitResult)
                     ?.takeIf { it.type == net.minecraft.world.phys.HitResult.Type.BLOCK }
                 val targetedAnnotation = AnnotationTargeting.pick(
@@ -90,6 +93,12 @@ object TracesClientHandlers {
             }
         }
     }
+
+    internal fun inputContextAvailable(mc: Minecraft): Boolean =
+        inputContextAvailable(mc.player != null, mc.screen != null, mc.player?.isPassenger == true)
+
+    internal fun inputContextAvailable(playerPresent: Boolean, screenOpen: Boolean, mounted: Boolean): Boolean =
+        playerPresent && !screenOpen && !mounted
 
     @SubscribeEvent
     @JvmStatic
