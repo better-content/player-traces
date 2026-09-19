@@ -44,6 +44,7 @@ class ErosionService(
                 .filter { it.surviving }
                 // Rain exposure is a property of each footprint, including its own Y and
                 // canopy. A chunk-centre height sample erodes sheltered corners incorrectly.
+                .filter { level.hasChunkAt(it.blockPos) }
                 .filter { level.canSeeSky(it.blockPos) && level.isRainingAt(it.blockPos) }
                 .forEach { pendingRain[it.id] = it.blockPos }
         }
@@ -55,7 +56,7 @@ class ErosionService(
         for ((traceId, position) in queue) {
             // The world may have changed since candidate collection; revalidate the same
             // footprint instead of relying on a stale chunk-level observation.
-            if (level.canSeeSky(position) && level.isRainingAt(position)) {
+            if (level.hasChunkAt(position) && level.canSeeSky(position) && level.isRainingAt(position)) {
                 storage.weakenFootprint(traceId, position, config.rainExposureFactor.get())
             }
         }
