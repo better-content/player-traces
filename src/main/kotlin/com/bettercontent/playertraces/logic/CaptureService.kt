@@ -102,7 +102,7 @@ class CaptureService(
         var emitted = 0
         points.forEach { point ->
             val surface = TraceSupportResolver.resolve(level, point, FOOTPRINT_SUPPORT_DEPTH) ?: return@forEach
-            storage.addFootTrace(FootTrace(
+            if (storage.addFootTrace(FootTrace(
                 id = UUID.randomUUID(),
                 levelKey = level.dimension().location().toString(),
                 x = surface.position.x, y = surface.position.y, z = surface.position.z,
@@ -116,8 +116,7 @@ class CaptureService(
                 surviving = true,
                 sourcePlayerInternal = player.uuid,
                 support = surface.support,
-            ))
-            emitted++
+            ))) emitted++
         }
 
         state.lastPos = nextPos

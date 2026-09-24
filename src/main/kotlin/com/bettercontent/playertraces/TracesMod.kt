@@ -8,6 +8,7 @@ import com.bettercontent.playertraces.logic.TraceQueryService
 import com.bettercontent.playertraces.network.TracesNetwork
 import com.bettercontent.playertraces.server.TraceServerRuntime
 import com.bettercontent.playertraces.storage.TraceStorageManager
+import com.bettercontent.playertraces.storage.ArenaDuelArchiveApi
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
 import net.minecraftforge.common.MinecraftForge
@@ -50,5 +51,14 @@ class TracesMod {
             getRuntime(server).storage(level)
 
         fun queryService(): TraceQueryService = TraceQueryService()
+
+        @JvmStatic fun appendArenaDuel(level: ServerLevel, arenaId: String, trace: ByteArray): Int =
+            ArenaDuelArchiveApi.append(level, arenaId, trace)
+
+        @JvmStatic fun arenaDuelCount(level: ServerLevel, arenaId: String): Int =
+            ArenaDuelArchiveApi.count(level, arenaId)
+
+        @JvmStatic fun arenaDuel(level: ServerLevel, arenaId: String, index: Int): ByteArray? =
+            ArenaDuelArchiveApi.get(level, arenaId, index)
     }
 }

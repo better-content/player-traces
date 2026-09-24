@@ -94,6 +94,74 @@ class DeathTraceTest {
     }
 
     @Test
+    fun `death history temporal indexes stay strict through replacement retention and reload`() {
+        val owner = UUID.randomUUID()
+        val data = DeathTraceSavedData()
+        val pool10 = pool(owner, 10)
+        val pool20 = pool(owner, 20)
+        val pool30 = pool(owner, 30)
+        data.addPool(pool10, maxTotal = 10)
+        data.addPool(pool20, maxTotal = 10)
+        data.addPool(pool30, maxTotal = 10)
+
+        assertEquals(listOf(30L), data.poolsAfter(20).map { it.createdAt })
+        assertEquals(listOf(20L, 30L), data.poolsAfter(10).map { it.createdAt })
+
+        data.addPool(pool20.copy(createdAt = 40), maxTotal = 10)
+        assertEquals(listOf(30L, 40L), data.poolsAfter(20).map { it.createdAt })
+        assertEquals(listOf(40L), data.poolsAfter(30).map { it.createdAt })
+
+        val echo10 = echo(owner, pool10, 10)
+        val echo20 = echo(owner, pool20, 20)
+        val echo30 = echo(owner, pool30, 30)
+        data.addEcho(echo10, maxTotal = 10, maxPerPlayer = 10)
+        data.addEcho(echo20, maxTotal = 10, maxPerPlayer = 10)
+        data.addEcho(echo30, maxTotal = 10, maxPerPlayer = 10)
+        assertEquals(listOf(30L), data.echoesAfter(20).map { it.createdAt })
+
+        data.addEcho(echo30.copy(createdAt = 40), maxTotal = 10, maxPerPlayer = 10)
+        assertEquals(listOf(40L), data.echoesAfter(30).map { it.createdAt })
+
+        val loaded = DeathTraceSavedData.load(data.save(CompoundTag()))
+        assertEquals(data.poolsAfter(20).map { it.id to it.createdAt }, loaded.poolsAfter(20).map { it.id to it.createdAt })
+        assertEquals(data.echoesAfter(20).map { it.id to it.createdAt }, loaded.echoesAfter(20).map { it.id to it.createdAt })
+    }
+
+    @Test
+    fun `death trace spatial buckets preserve exact bounds through mutation trimming and reload`() {
+        val owner = UUID.randomUUID()
+        val west = pool(owner, 1).copy(x = -16.01, z = -0.01)
+        val edge = pool(owner, 2).copy(x = -16.0, z = 0.0)
+        val east = pool(owner, 3).copy(x = 16.0, z = 16.0)
+        val data = DeathTraceSavedData()
+        data.addPool(west, maxTotal = 3)
+        data.addPool(edge, maxTotal = 3)
+        data.addPool(east, maxTotal = 3)
+
+        assertEquals(listOf(west.id), data.poolsWithin(-16.01, -16.01, -0.01, -0.01).map { it.id })
+        assertEquals(listOf(edge.id), data.poolsWithin(-16.0, -16.0, 0.0, 0.0).map { it.id })
+        assertEquals(setOf(west.id, edge.id), data.poolsWithin(-16.01, -16.0, -0.01, 0.0).map { it.id }.toSet())
+
+        val moved = edge.copy(x = 64.0, z = -64.0)
+        data.addPool(moved, maxTotal = 3)
+        assertTrue(data.poolsWithin(-16.0, 0.0, -1.0, 1.0).none { it.id == edge.id })
+        assertEquals(listOf(moved.id), data.poolsWithin(64.0, 64.0, -64.0, -64.0).map { it.id })
+
+        data.addPool(pool(owner, 4).copy(x = -160.0, z = 160.0), maxTotal = 2)
+        assertEquals(0, data.poolsWithin(-16.01, -16.01, -0.01, -0.01).size)
+        val loaded = DeathTraceSavedData.load(data.save(CompoundTag()))
+        assertEquals(data.poolsWithin(-200.0, 100.0, -100.0, 200.0).map { it.id }.toSet(),
+            loaded.poolsWithin(-200.0, 100.0, -100.0, 200.0).map { it.id }.toSet())
+
+        val pool = pool(owner, 10)
+        val echo = echo(owner, pool, 10).copy(x = -32.0, z = 48.0)
+        data.addEcho(echo, maxTotal = 2, maxPerPlayer = 2)
+        assertEquals(listOf(echo.id), data.echoesWithin(-32.0, -32.0, 48.0, 48.0).map { it.id })
+        val loadedEchoes = DeathTraceSavedData.load(data.save(CompoundTag()))
+        assertEquals(listOf(echo.id), loadedEchoes.echoesWithin(-32.0, -32.0, 48.0, 48.0).map { it.id })
+    }
+
+    @Test
     fun `query packet round trips blood pools and compact echoes`() {
         val encoded = validEncodedClip(24)
         val packet = TraceQueryResponsePacket(

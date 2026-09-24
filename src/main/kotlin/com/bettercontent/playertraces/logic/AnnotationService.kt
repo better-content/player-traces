@@ -37,7 +37,7 @@ class AnnotationService(private val storage: TraceStorageManager) : AnnotationAp
             revision = 1,
             createdByInternal = viewer.getUUID()
         )
-        storage.addAnnotation(record)
+        check(storage.addAnnotation(record)) { "Trace storage is temporarily full; annotation was not saved" }
         (level as? ServerLevel)?.let { AnnotationUpdateIndex.get(it).touch(record.id, it.gameTime) }
         return record
     }
@@ -63,7 +63,9 @@ class AnnotationService(private val storage: TraceStorageManager) : AnnotationAp
         }) { "you already have an annotation on this block" }
         return TraceAnnotation(
             UUID.randomUUID(), text, icon, color, target, target, GLOBAL_TEAM, 1, viewer.uuid,
-        ).also(storage::addAnnotation).also { (level as? ServerLevel)?.let { serverLevel -> AnnotationUpdateIndex.get(serverLevel).touch(it.id, serverLevel.gameTime) } }
+        ).also { annotation ->
+            check(storage.addAnnotation(annotation)) { "Trace storage is temporarily full; annotation was not saved" }
+        }.also { (level as? ServerLevel)?.let { serverLevel -> AnnotationUpdateIndex.get(serverLevel).touch(it.id, serverLevel.gameTime) } }
     }
 
     fun updateComponents(

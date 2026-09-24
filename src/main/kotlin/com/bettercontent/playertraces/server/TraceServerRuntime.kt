@@ -6,6 +6,8 @@ import com.bettercontent.playertraces.logic.CaptureService
 import com.bettercontent.playertraces.logic.ErosionService
 import com.bettercontent.playertraces.logic.GuidanceService
 import com.bettercontent.playertraces.storage.TraceStorageManager
+import com.bettercontent.playertraces.storage.StorageOutageFrontier
+import com.bettercontent.playertraces.storage.StorageOutageStatus
 import net.minecraft.core.BlockPos
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
@@ -87,6 +89,16 @@ class TraceServerRuntime(val server: MinecraftServer) {
     }
 
     fun storageCount(): Int = storages.size
+
+    fun storageOutageStatus(): String {
+        val frontiers = storages.values.map { it.outageFrontier() }
+        val combined = StorageOutageFrontier(
+            rejectedCaptures = frontiers.sumOf { it.rejectedCaptures },
+            rejectedAnnotations = frontiers.sumOf { it.rejectedAnnotations },
+            affectedShards = frontiers.flatMapTo(LinkedHashSet()) { it.affectedShards },
+        )
+        return StorageOutageStatus.format(combined)
+    }
 
     fun onPlayerTick(player: ServerPlayer) {
         val emitted=capture(player.serverLevel()).onPlayerTick(player)
@@ -209,7 +221,7 @@ class TraceServerRuntime(val server: MinecraftServer) {
         val surface = TraceSupportResolver.resolve(level, position, LIFECYCLE_SUPPORT_DEPTH)
         val rendered = surface?.position ?: position.add(0.0, 0.012, 0.0)
         val sequence = UUID.randomUUID()
-        storage(level).addFootTrace(
+        if (!storage(level).addFootTrace(
             FootTrace(
                 id = UUID.randomUUID(),
                 levelKey = level.dimension().location().toString(),
@@ -228,7 +240,10 @@ class TraceServerRuntime(val server: MinecraftServer) {
                 kind = kind,
                 support = surface?.support,
             ),
-        )
+        )) {
+            // Lifecycle hooks must not turn a transient storage outage into a server event failure.
+            log.warn("Omitted {} lifecycle marker for {} because trace storage is backpressured", kind, player.scoreboardName)
+        }
     }
 
     fun onPlayerDeath(player: ServerPlayer, cause: String) {
@@ -360,10 +375,11 @@ class TraceServerRuntime(val server: MinecraftServer) {
                 add(Vec3(x, 101.0, z) to 0f)
             }
         }
+        var acceptedTraces = 0
         points.forEachIndexed { index, (pos, facingYaw) ->
             val surface = TraceSupportResolver.resolve(level, pos, LIFECYCLE_SUPPORT_DEPTH)
                 ?: throw IllegalStateException("visual trace fixture has no supporting block at $pos")
-            store.addFootTrace(
+            if (store.addFootTrace(
                 FootTrace(
                     id = UUID.nameUUIDFromBytes("traces-visual-v12-$index".toByteArray()),
                     levelKey = level.dimension().location().toString(),
@@ -381,10 +397,10 @@ class TraceServerRuntime(val server: MinecraftServer) {
                     sourcePlayerInternal = player.uuid,
                     support = surface.support,
                 ),
-            )
+            )) acceptedTraces++
         }
         val annotationPos = BlockPos(-6, 101, 8)
-        store.addAnnotation(
+        val acceptedAnnotation = store.addAnnotation(
             TraceAnnotation(
                 id = fixtureAnnotationId,
                 text = "Unlinked note",
@@ -397,12 +413,19 @@ class TraceServerRuntime(val server: MinecraftServer) {
                 createdByInternal = fixtureAuthor,
             ),
         )
-        attachVisualAnnotationEcho(level, fixtureAnnotationId, revision = 1, owner = fixtureAuthor)
+        if (acceptedAnnotation) {
+            attachVisualAnnotationEcho(level, fixtureAnnotationId, revision = 1, owner = fixtureAuthor)
+        } else {
+            log.warn("TRACES_VISUAL_FIXTURE omitted annotation because trace storage is backpressured")
+        }
         val fixtureAnnotations = store.queryAnnotations(BlockPos(-20, 0, -20), BlockPos(20, 255, 20)).size
         log.info(
             "TRACES_VISUAL_FIXTURE traces={} backward={} diagonal={} forward={} spacing=0.75 annotation={} nearbyAnnotations={} camera=0.5,101,-7.5 yaw=0 pitch=25",
-            points.size, 13, 8, 6, fixtureAnnotationId, fixtureAnnotations,
+            acceptedTraces, 13, 8, 6, if (acceptedAnnotation) fixtureAnnotationId else "omitted", fixtureAnnotations,
         )
+        if (acceptedTraces != points.size) {
+            log.warn("TRACES_VISUAL_FIXTURE omitted {} trace(s) because trace storage is backpressured", points.size - acceptedTraces)
+        }
     }
 
     fun disconnectVisualFixture(level: ServerLevel, player: ServerPlayer) {

@@ -13,6 +13,13 @@ class TraceShardLruCache(maxEntries: Int) {
     @Synchronized
     fun get(id: TraceShardId): TraceShardState? = delegate[id]
 
+    /** The state that would be evicted by a new key, without changing the cache. */
+    @Synchronized
+    fun evictionCandidateFor(id: TraceShardId): Pair<TraceShardId, TraceShardState>? =
+        if (!delegate.containsKey(id) && delegate.size >= capacity) {
+            delegate.entries.first().let { it.key to it.value }
+        } else null
+
     @Synchronized
     fun put(id: TraceShardId, state: TraceShardState): Pair<TraceShardId, TraceShardState>? {
         val eldest = if (!delegate.containsKey(id) && delegate.size >= capacity) delegate.entries.first() else null

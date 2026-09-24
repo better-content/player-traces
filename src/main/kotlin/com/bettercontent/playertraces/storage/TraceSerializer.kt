@@ -52,7 +52,20 @@ object TraceSerializer {
     class UnsupportedShardVersionException(message: String) : IllegalArgumentException(message)
 
     fun read(path: Path): TraceShardState {
-        if (!Files.exists(path)) return TraceShardState()
+        if (!Files.exists(path) && !TraceArchive.hasManifest(path)) return TraceShardState()
+        if (TraceArchive.hasManifest(path)) {
+            try {
+                val snapshot = TraceArchive.readLatest(path)
+                val state = parse(snapshot.payload, path)
+                state.setArchiveRevision(snapshot.revision)
+                return state
+            } catch (error: Exception) {
+                log.warn("Segmented trace archive recovery failed for {}: {}", path, error.toString())
+                if (!Files.exists(path)) return TraceShardState()
+                // A retained v3 shard is a migration/recovery source; never discard it
+                // when both manifests are unavailable or corrupt.
+            }
+        }
         if (Files.size(path) > MAX_SHARD_BYTES) {
             log.warn("Rejecting oversized shard {} ({} bytes)", path, Files.size(path))
             quarantineCorrupt(path)
@@ -133,7 +146,7 @@ object TraceSerializer {
                             val count = input.readInt()
                             requireCount("annotation", count, MAX_ANNOTATIONS, input)
                             observedRecords += count
-                            repeat(count) { state.annotations.add(readAnnotation(input)) }
+                            repeat(count) { state.addLoadedAnnotation(readAnnotation(input)) }
                         }
                         SEEN_BLOCK -> {
                             val count = input.readInt()
@@ -181,7 +194,7 @@ object TraceSerializer {
         }
     }
 
-    fun write(path: Path, state: TraceShardState, bounds: Pair<BlockPos, BlockPos>) {
+    internal fun encodeV3(state: TraceShardState, bounds: Pair<BlockPos, BlockPos>): ByteArray {
         require(state.footTraces.none { it.kind == TraceKind.FOOTPRINT && it.support == null }) {
             "footprint trace has no supporting block"
         }
@@ -230,7 +243,11 @@ object TraceSerializer {
             footerOut.writeInt(state.footTraces.size + state.annotations.size + state.seenStates.size)
             footerOut.writeLong(crc.value)
         }
-        val bytes = body + footerBuffer.toByteArray()
+        return body + footerBuffer.toByteArray()
+    }
+
+    fun write(path: Path, state: TraceShardState, bounds: Pair<BlockPos, BlockPos>) {
+        val bytes = encodeV3(state, bounds)
         Files.createDirectories(path.parent)
         val temp = tempPath(path)
         writeDurable(temp, bytes)
@@ -246,6 +263,8 @@ object TraceSerializer {
         moveReplacing(temp, path)
         forceDirectory(path.parent)
     }
+
+    internal fun decodeV3(bytes: ByteArray, label: Path): TraceShardState = parse(bytes, label)
 
     private fun recoverBackup(path: Path): TraceShardState? {
         val backup = backupPath(path)
@@ -306,6 +325,18 @@ object TraceSerializer {
         } catch (_: Exception) {
         }
     }
+
+    internal fun writeJournalFootTrace(output: DataOutputStream, trace: FootTrace) = writeFootTrace(output, trace)
+
+    internal fun readJournalFootTrace(input: DataInputStream): FootTrace = readFootTraceV3(input)
+
+    internal fun writeJournalAnnotation(output: DataOutputStream, annotation: TraceAnnotation) = writeAnnotation(output, annotation)
+
+    internal fun readJournalAnnotation(input: DataInputStream): TraceAnnotation = readAnnotation(input)
+
+    internal fun writeJournalSeenState(output: DataOutputStream, state: SeenStateRecord) = writeSeenState(output, state)
+
+    internal fun readJournalSeenState(input: DataInputStream): SeenStateRecord = readSeenState(input)
 
     private fun writeFootTrace(output: DataOutputStream, trace: FootTrace) {
         output.writeUTF(trace.id.toString())

@@ -33,18 +33,18 @@ object ReturnSummaryApi {
         val min = BlockPos(center.x - RADIUS, center.y - RADIUS, center.z - RADIUS)
         val max = BlockPos(center.x + RADIUS, center.y + RADIUS, center.z + RADIUS)
         val storage = TracesMod.getRuntime(player.server).storage(level)
-        val paths = storage.queryTraces(min, max).asSequence()
-            .filter { it.createdAt > cutoff && it.sourcePlayerInternal != player.uuid }
+        val paths = storage.queryTracesAfter(min, max, cutoff).asSequence()
+            .filter { it.sourcePlayerInternal != player.uuid }
             .map { it.sequenceId }.distinct().count()
         val updates = AnnotationUpdateIndex.get(level)
         val notes = storage.queryAnnotations(min, max).count { annotation ->
             annotation.createdByInternal != player.uuid && (updates.updatedAt(annotation.id)?.let { it > cutoff } == true)
         }
         val deaths = TracesMod.getRuntime(player.server).deathTraces(level)
-        val pools = deaths.poolsWithin(player.x - RADIUS, player.x + RADIUS, player.z - RADIUS, player.z + RADIUS)
-            .count { it.createdAt > cutoff && it.ownerId != player.uuid }
-        val echoes = deaths.echoesWithin(player.x - RADIUS, player.x + RADIUS, player.z - RADIUS, player.z + RADIUS)
-            .count { it.createdAt > cutoff && it.ownerId != player.uuid }
+        val pools = deaths.poolsAfter(cutoff)
+            .count { it.x in player.x - RADIUS..player.x + RADIUS && it.z in player.z - RADIUS..player.z + RADIUS && it.ownerId != player.uuid }
+        val echoes = deaths.echoesAfter(cutoff)
+            .count { it.x in player.x - RADIUS..player.x + RADIUS && it.z in player.z - RADIUS..player.z + RADIUS && it.ownerId != player.uuid }
         return ReturnSummary(paths, notes, pools, echoes)
     }
 

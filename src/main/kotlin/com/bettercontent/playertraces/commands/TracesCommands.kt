@@ -59,6 +59,7 @@ object TracesCommands {
                             Commands.literal("storage").executes { ctx ->
                                 val runtime = TracesMod.getRuntime(ctx.source.server)
                                 sourceStorageLine(ctx.source, runtime.storageCount())
+                                ctx.source.sendSystemMessage(Component.literal(runtime.storageOutageStatus()))
                                 1
                             }
                         )

@@ -41,6 +41,7 @@ Nearby changed-note guidance is server-authored and shown as bounded floating ro
 - Unknown future major versions are refused and quarantined.
 - Unknown minor versions attempt safe best-effort parsing where compatible.
 - Legacy server-root `data/traces` directories are never imported automatically.
+- Active shard writes use immutable `.seg.<sequence>` snapshot frames with per-frame CRC32 and SHA-256 checksums, published by a checksummed `.manifest` and one prior-manifest backup. Readers replay the latest committed snapshot into the existing shard state. A failed rollback leaves a durable `.gap` frontier marker; orphan segments are ignored. Existing `.traces` v3 files remain readable as migration/recovery sources and are not overwritten by segmented writes.
 - Annotation echoes use separate per-dimension saved data. Each note has at most one 20 Hz, 1–60-frame bone clip; clips are capped at 12 KiB, 2,048 per dimension, and 64 per player. Capacity overflow rejects the mutation instead of evicting an existing gesture.
 
 ## Commands

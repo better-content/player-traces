@@ -16,6 +16,14 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import com.mojang.logging.LogUtils
 
+internal fun nextTraceTileWireRevision(lastSent: Long?, previousStorageRevision: Long?, storageRevision: Long, previousCleanupCount: Int?, cleanupCount: Int): Long {
+    require(storageRevision >= 0L && cleanupCount >= 0)
+    if (lastSent == null) return storageRevision
+    val changed = previousStorageRevision != storageRevision || previousCleanupCount != cleanupCount
+    if (!changed) return lastSent
+    return maxOf(storageRevision, if (lastSent == Long.MAX_VALUE) Long.MAX_VALUE else lastSent + 1L)
+}
+
 object TracesNetwork {
     private val logger = LogUtils.getLogger()
     private const val PROTOCOL = "player_traces_v8"
@@ -397,7 +405,11 @@ object TracesNetwork {
                 ),
             )
         }
-        evicted.forEach(subscription.sentRevisions::remove)
+        evicted.forEach { tile ->
+            subscription.sentRevisions.remove(tile)
+            subscription.sentStorageRevisions.remove(tile)
+            subscription.sentCleanupCounts.remove(tile)
+        }
 
         var tileCount = 0
         var recordCount = 0
@@ -413,7 +425,12 @@ object TracesNetwork {
                     val state = level.getBlockState(support.position)
                     !state.isAir && net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.block) == support.blockId
                 }
-                val revision = storage.tileRevision(tile.chunkX, tile.chunkZ)
+                val storageRevision = storage.tileRevision(tile.chunkX, tile.chunkZ)
+                val cleanupCount = storage.pendingBlockCleanupCount(tile.chunkX, tile.chunkZ)
+                val revision = nextTraceTileWireRevision(
+                    subscription.sentRevisions[tile], subscription.sentStorageRevisions[tile], storageRevision,
+                    subscription.sentCleanupCounts[tile], cleanupCount,
+                )
                 if (subscription.sentRevisions[tile] == revision) return@forEach
                 val traces = storage.queryTraceTile(tile.chunkX, tile.chunkZ).map(::visibleTrace)
                 if (traces.isNotEmpty() && recordCount > 0 && recordCount + traces.size > recordBudget) return@forEach
@@ -434,6 +451,8 @@ object TracesNetwork {
                     )
                 }
                 subscription.sentRevisions[tile] = revision
+                subscription.sentStorageRevisions[tile] = storageRevision
+                subscription.sentCleanupCounts[tile] = cleanupCount
                 tileCount++
                 recordCount += traces.size
             }
@@ -463,5 +482,7 @@ object TracesNetwork {
         val generation: Long,
         val loginGameTime: Long,
         val sentRevisions: MutableMap<TileCoordinate, Long> = HashMap(),
+        val sentStorageRevisions: MutableMap<TileCoordinate, Long> = HashMap(),
+        val sentCleanupCounts: MutableMap<TileCoordinate, Int> = HashMap(),
     )
 }
